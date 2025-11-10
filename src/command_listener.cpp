@@ -1,4 +1,14 @@
 #include "command_listener.h"
+#include "module_manager.h"
+#include "rtc_module.h"
+#include "stepper_motor.h"
+#include "feeding_controller.h"
+#include "feeding_schedule.h"
+#include "wifi_controller.h"
+#include "ntp_sync.h"
+#include "vibration_motor.h"
+#include "rgb_led.h"
+#include "touch_sensor.h"
 #include "console_manager.h"
 
 // Forward declarations for task control functions (implemented in main.cpp)
@@ -10,15 +20,10 @@ extern void showTaskStatus();
 extern void enableFeedingMonitor();
 
 /**
- * Constructor: Initialize command listener with system components
+ * Constructor: Initialize command listener with ModuleManager
  */
-CommandListener::CommandListener(RTCModule* rtc, StepperMotor* motor, 
-                                FeedingController* feeder, FeedingSchedule* schedule,
-                                WiFiController* wifi, NTPSync* ntp, 
-                                VibrationMotor* vibration, RGBLed* rgb, bool* feedingState)
-    : rtcModule(rtc), stepperMotor(motor), feedingController(feeder), 
-      feedingSchedule(schedule), wifiController(wifi), ntpSync(ntp), 
-      vibrationMotor(vibration), rgbLed(rgb), feedingInProgress(feedingState) {
+CommandListener::CommandListener(ModuleManager* moduleManager)
+    : modules(moduleManager) {
 }
 
 /**
@@ -55,6 +60,9 @@ bool CommandListener::processCommand(const String& command) {
         return true;
     }
     if (processRGBCommands(cmd)) {
+        return true;
+    }
+    if (processTouchCommands(cmd)) {
         return true;
     }
     
@@ -121,7 +129,7 @@ bool CommandListener::processTaskCommands(const String& command) {
 bool CommandListener::processMotorCommands(const String& command) {
     if (command.startsWith("FEED")) {
         // Check if feeding is already in progress
-        if (*feedingInProgress) {
+        if (modules->getFeedingInProgress()) {
             Console::printlnR(F("Feeding already in progress. Please wait..."));
             return true;
         }
@@ -136,22 +144,22 @@ bool CommandListener::processMotorCommands(const String& command) {
         }
         
         // Use async feeding to avoid blocking the scheduler
-        if (feedingController->dispenseFoodAsync(portions)) {
-            *feedingInProgress = true;
+        if (modules->getFeedingController()->dispenseFoodAsync(portions)) {
+            modules->setFeedingInProgress(true);
             enableFeedingMonitor(); // Start monitoring
         }
         return true;
     }
     else if (command == "CALIBRATE") {
-        feedingController->calibrateFeeder();
+        modules->getFeedingController()->calibrateFeeder();
         return true;
     }
     else if (command == "MOTOR STATUS") {
-        stepperMotor->printStatus();
+        modules->getStepperMotor()->printStatus();
         return true;
     }
     else if (command == "FEEDING STATUS") {
-        feedingController->printFeedingStatus();
+        modules->getFeedingController()->printFeedingStatus();
         return true;
     }
     else if (command == "CONFIG") {
@@ -164,7 +172,7 @@ bool CommandListener::processMotorCommands(const String& command) {
             String stepsStr = command.substring(spaceIndex + 1);
             int steps = stepsStr.toInt();
             if (steps > 0) {
-                stepperMotor->stepClockwise(steps);
+                modules->getStepperMotor()->stepClockwise(steps);
                 return true;
             }
         }
@@ -177,7 +185,7 @@ bool CommandListener::processMotorCommands(const String& command) {
             String stepsStr = command.substring(spaceIndex + 1);
             int steps = stepsStr.toInt();
             if (steps > 0) {
-                stepperMotor->stepCounterClockwise(steps);
+                modules->getStepperMotor()->stepCounterClockwise(steps);
                 return true;
             }
         }
@@ -185,11 +193,11 @@ bool CommandListener::processMotorCommands(const String& command) {
         return true;
     }
     else if (command == "MOTOR HIGH PERFORMANCE") {
-        stepperMotor->enableHighPerformanceMode();
+        modules->getStepperMotor()->enableHighPerformanceMode();
         return true;
     }
     else if (command == "MOTOR POWER SAVING") {
-        stepperMotor->enablePowerSavingMode();
+        modules->getStepperMotor()->enablePowerSavingMode();
         return true;
     }
     return false;
@@ -200,12 +208,12 @@ bool CommandListener::processMotorCommands(const String& command) {
  */
 bool CommandListener::processRTCCommands(const String& command) {
     if (command == "TIME") {
-        rtcModule->printDateTime();
+        modules->getRTCModule()->printDateTime();
         return true;
     }
     else if (command.startsWith("SET ")) {
         // Use RTCModule's built-in command processing for SET commands
-        return rtcModule->processCommand(command);
+        return modules->getRTCModule()->processCommand(command);
     }
     return false;
 }
@@ -319,6 +327,16 @@ void CommandListener::showHelp() {
     Console::printlnR(F("  RGB TEST                - Run test sequence"));
     Console::printlnR(F(""));
     
+    Console::printlnR(F("TOUCH SENSOR:"));
+    Console::printlnR(F("  TOUCH STATUS            - Show sensor status"));
+    Console::printlnR(F("  TOUCH RESET             - Reset statistics"));
+    Console::printlnR(F("  TOUCH DEBOUNCE <ms>     - Set debounce delay"));
+    Console::printlnR(F("  TOUCH LONGPRESS <ms>    - Set long press duration"));
+    Console::printlnR(F("  TOUCH LONGPRESS ENABLE  - Enable long press"));
+    Console::printlnR(F("  TOUCH LONGPRESS DISABLE - Disable long press"));
+    Console::printlnR(F("  TOUCH TEST              - Test touch detection"));
+    Console::printlnR(F(""));
+    
     Console::printlnR(F("EXAMPLES:"));
     Console::printlnR(F("  FEED 3                  - Dispense 3 portions"));
     Console::printlnR(F("  SET 29/10/2025 14:30:00 - Set date/time"));
@@ -342,6 +360,9 @@ void CommandListener::showHelp() {
     Console::printlnR(F("  RGB FADE RED 2000       - Fade to red in 2 seconds"));
     Console::printlnR(F("  RGB FADE 0 0 255 2000   - Fade to blue in 2 seconds"));
     Console::printlnR(F("  RGB BLINK 500 10        - Blink 10 times, 500ms interval"));
+    Console::printlnR(F("  TOUCH STATUS            - Show touch sensor status"));
+    Console::printlnR(F("  TOUCH DEBOUNCE 40       - Set 40ms debounce"));
+    Console::printlnR(F("  TOUCH LONGPRESS 1500    - Set 1.5s long press"));
     Console::printlnR(F(""));
     Console::printlnR(F("==============================="));
 }
@@ -357,17 +378,17 @@ void CommandListener::showSystemInfo() {
     Console::printR(F("Logging: "));
     Console::printlnR(ConsoleManager::isLoggingEnabled ? F("ENABLED") : F("DISABLED"));
     Console::printR(F("RTC Status: "));
-    Console::printlnR(rtcModule ? F("Connected") : F("Not Available"));
+    Console::printlnR(modules && modules->hasRTCModule() ? F("Connected") : F("Not Available"));
     Console::printR(F("Motor Status: "));
-    Console::printlnR(stepperMotor->isReady() ? F("Ready") : F("Not Ready"));
+    Console::printlnR(modules->getStepperMotor()->isReady() ? F("Ready") : F("Not Ready"));
     Console::printR(F("Feeding Controller: "));
-    Console::printlnR(feedingController->isReady() ? F("Ready") : F("Not Ready"));
+    Console::printlnR(modules->getFeedingController()->isReady() ? F("Ready") : F("Not Ready"));
     Console::printR(F("Feeding in Progress: "));
-    Console::printlnR(*feedingInProgress ? F("Yes") : F("No"));
+    Console::printlnR(modules->getFeedingInProgress() ? F("Yes") : F("No"));
     Console::printR(F("WiFi Status: "));
-    Console::printlnR(wifiController->isWiFiConnected() ? F("Connected") : F("Disconnected"));
+    Console::printlnR(modules->getWiFiController()->isWiFiConnected() ? F("Connected") : F("Disconnected"));
     Console::printR(F("Config Portal: "));
-    Console::printlnR(wifiController->isConfigPortalActive() ? F("Active") : F("Inactive"));
+    Console::printlnR(modules->getWiFiController()->isConfigPortalActive() ? F("Active") : F("Inactive"));
     Console::printlnR(F("=============================="));
 }
 
@@ -381,7 +402,7 @@ bool CommandListener::processWiFiCommands(const String& command) {
     }
     // WiFi commands
     else if (command.startsWith("WIFI ")) {
-        return wifiController->processWiFiCommand(command);
+        return modules->getWiFiController()->processWiFiCommand(command);
     }
     
     return false;
@@ -419,7 +440,7 @@ void CommandListener::showWiFiPortalConfig() {
  */
 bool CommandListener::processNTPCommands(const String& command) {
     if (command.startsWith("NTP ")) {
-        return ntpSync->processNTPCommand(command);
+        return modules->getNTPSync()->processNTPCommand(command);
     }
     
     return false;
@@ -437,40 +458,40 @@ bool CommandListener::processScheduleCommands(const String& command) {
     subCommand.trim();
     
     if (subCommand == "STATUS") {
-        feedingSchedule->printScheduleStatus();
+        modules->getFeedingSchedule()->printScheduleStatus();
         return true;
     }
     
     if (subCommand == "LIST") {
-        feedingSchedule->printScheduleList();
+        modules->getFeedingSchedule()->printScheduleList();
         return true;
     }
     
     if (subCommand == "NEXT") {
-        feedingSchedule->printNextFeeding();
+        modules->getFeedingSchedule()->printNextFeeding();
         return true;
     }
     
     if (subCommand == "LAST") {
-        feedingSchedule->printLastFeeding();
+        modules->getFeedingSchedule()->printLastFeeding();
         return true;
     }
     
     if (subCommand == "ENABLE") {
-        feedingSchedule->enableSchedule(true);
+        modules->getFeedingSchedule()->enableSchedule(true);
         return true;
     }
     
     if (subCommand == "DISABLE") {
-        feedingSchedule->enableSchedule(false);
+        modules->getFeedingSchedule()->enableSchedule(false);
         return true;
     }
     
     if (subCommand.startsWith("ENABLE ")) {
         String indexStr = subCommand.substring(7);
         int index = indexStr.toInt();
-        if (index >= 0 && index < feedingSchedule->getScheduleCount()) {
-            feedingSchedule->enableScheduleAtIndex(index, true);
+        if (index >= 0 && index < modules->getFeedingSchedule()->getScheduleCount()) {
+            modules->getFeedingSchedule()->enableScheduleAtIndex(index, true);
         } else {
             Console::printlnR(F("ERROR: Invalid schedule index"));
         }
@@ -480,8 +501,8 @@ bool CommandListener::processScheduleCommands(const String& command) {
     if (subCommand.startsWith("DISABLE ")) {
         String indexStr = subCommand.substring(8);
         int index = indexStr.toInt();
-        if (index >= 0 && index < feedingSchedule->getScheduleCount()) {
-            feedingSchedule->enableScheduleAtIndex(index, false);
+        if (index >= 0 && index < modules->getFeedingSchedule()->getScheduleCount()) {
+            modules->getFeedingSchedule()->enableScheduleAtIndex(index, false);
         } else {
             Console::printlnR(F("ERROR: Invalid schedule index"));
         }
@@ -492,7 +513,7 @@ bool CommandListener::processScheduleCommands(const String& command) {
         String toleranceStr = subCommand.substring(10);
         int tolerance = toleranceStr.toInt();
         if (tolerance > 0 && tolerance <= 120) { // Max 2 hours
-            feedingSchedule->setTolerance(tolerance);
+            modules->getFeedingSchedule()->setTolerance(tolerance);
         } else {
             Console::printlnR(F("ERROR: Tolerance must be 1-120 minutes"));
         }
@@ -503,7 +524,7 @@ bool CommandListener::processScheduleCommands(const String& command) {
         String recoveryStr = subCommand.substring(9);
         int recovery = recoveryStr.toInt();
         if (recovery > 0 && recovery <= 72) { // Max 72 hours
-            feedingSchedule->setMaxRecoveryHours(recovery);
+            modules->getFeedingSchedule()->setMaxRecoveryHours(recovery);
         } else {
             Console::printlnR(F("ERROR: Recovery must be 1-72 hours"));
         }
@@ -511,12 +532,12 @@ bool CommandListener::processScheduleCommands(const String& command) {
     }
     
     if (subCommand == "DIAGNOSTICS") {
-        feedingSchedule->printDiagnostics();
+        modules->getFeedingSchedule()->printDiagnostics();
         return true;
     }
     
     if (subCommand == "TEST") {
-        feedingSchedule->testScheduleCalculation();
+        modules->getFeedingSchedule()->testScheduleCalculation();
         return true;
     }
     
@@ -552,13 +573,13 @@ bool CommandListener::processVibrationCommands(const String& command) {
     
     // VIB STATUS - Show vibration motor status
     if (command == "VIB STATUS") {
-        Console::printlnR(vibrationMotor->getStatus());
+        Console::printlnR(modules->getVibrationMotor()->getStatus());
         return true;
     }
     
     // VIB STOP - Stop vibration
     if (command == "VIB STOP") {
-        vibrationMotor->stop();
+        modules->getVibrationMotor()->stop();
         Console::printlnR(F("Vibration stopped"));
         return true;
     }
@@ -578,7 +599,7 @@ bool CommandListener::processVibrationCommands(const String& command) {
             return true;
         }
         
-        vibrationMotor->startContinuous(intensity);
+        modules->getVibrationMotor()->startContinuous(intensity);
         Console::printR(F("Vibration started at "));
         Console::printR(String(intensity));
         Console::printlnR(F("% intensity"));
@@ -616,7 +637,7 @@ bool CommandListener::processVibrationCommands(const String& command) {
             return true;
         }
         
-        vibrationMotor->startTimed(intensity, duration);
+        modules->getVibrationMotor()->startTimed(intensity, duration);
         Console::printR(F("Vibration: "));
         Console::printR(String(intensity));
         Console::printR(F("% for "));
@@ -641,7 +662,7 @@ bool CommandListener::processVibrationCommands(const String& command) {
             return true;
         }
         
-        vibrationMotor->setIntensity(intensity);
+        modules->getVibrationMotor()->setIntensity(intensity);
         Console::printR(F("Intensity set to "));
         Console::printR(String(intensity));
         Console::printlnR(F("%"));
@@ -651,7 +672,7 @@ bool CommandListener::processVibrationCommands(const String& command) {
     // VIB TEST - Quick test vibration
     if (command == "VIB TEST") {
         Console::printlnR(F("Running vibration test..."));
-        vibrationMotor->startTimed(100, 200);
+        modules->getVibrationMotor()->startTimed(100, 200);
         return true;
     }
     
@@ -679,7 +700,7 @@ bool CommandListener::processRGBCommands(const String& command) {
     
     // RGB STATUS - Show RGB LED status
     if (command == "RGB STATUS") {
-        Console::printlnR(rgbLed->getStatus());
+        Console::printlnR(modules->getRGBLed()->getStatus());
         return true;
     }
     
@@ -690,7 +711,7 @@ bool CommandListener::processRGBCommands(const String& command) {
         
         if (params.length() == 0) {
             // Instant on
-            rgbLed->turnOn();
+            modules->getRGBLed()->turnOn();
             Console::printlnR(F("RGB LED turned on"));
         } else {
             // Fade on over duration
@@ -701,15 +722,15 @@ bool CommandListener::processRGBCommands(const String& command) {
             }
             
             // Get current color and fade from black to that color
-            RGBLed::Color currentColor = rgbLed->getColor();
+            RGBLed::Color currentColor = modules->getRGBLed()->getColor();
             RGBLed::Color black = {0, 0, 0};
             
             // Set to black first (without turning on)
-            rgbLed->setColor(black);
-            rgbLed->turnOn();
+            modules->getRGBLed()->setColor(black);
+            modules->getRGBLed()->turnOn();
             
             // Fade to original color
-            rgbLed->fadeTo(currentColor, duration);
+            modules->getRGBLed()->fadeTo(currentColor, duration);
             
             Console::printR(F("Fading on over "));
             Console::printR(String(duration));
@@ -725,8 +746,8 @@ bool CommandListener::processRGBCommands(const String& command) {
         
         if (params.length() == 0) {
             // Instant off
-            rgbLed->stopBlink();  // Explicitly stop blink
-            rgbLed->turnOff();
+            modules->getRGBLed()->stopBlink();  // Explicitly stop blink
+            modules->getRGBLed()->turnOff();
             Console::printlnR(F("RGB LED turned off"));
         } else {
             // Fade off over duration
@@ -736,11 +757,11 @@ bool CommandListener::processRGBCommands(const String& command) {
                 return true;
             }
             
-            rgbLed->stopBlink();  // Stop blink before fading
+            modules->getRGBLed()->stopBlink();  // Stop blink before fading
             
             // Fade to black
             RGBLed::Color black = {0, 0, 0};
-            rgbLed->fadeTo(black, duration);
+            modules->getRGBLed()->fadeTo(black, duration);
             
             Console::printR(F("Fading off over "));
             Console::printR(String(duration));
@@ -780,7 +801,7 @@ bool CommandListener::processRGBCommands(const String& command) {
             return true;
         }
         
-        rgbLed->setColor(r, g, b);
+        modules->getRGBLed()->setColor(r, g, b);
         Console::printR(F("Color set to RGB("));
         Console::printR(String(r));
         Console::printR(F(", "));
@@ -793,47 +814,47 @@ bool CommandListener::processRGBCommands(const String& command) {
     
     // RGB RED/GREEN/BLUE/YELLOW/CYAN/MAGENTA/WHITE/ORANGE/PURPLE - Predefined colors
     if (command == "RGB RED") {
-        rgbLed->setColor(RGBLed::RED);
+        modules->getRGBLed()->setColor(RGBLed::RED);
         Console::printlnR(F("Color: Red"));
         return true;
     }
     if (command == "RGB GREEN") {
-        rgbLed->setColor(RGBLed::GREEN);
+        modules->getRGBLed()->setColor(RGBLed::GREEN);
         Console::printlnR(F("Color: Green"));
         return true;
     }
     if (command == "RGB BLUE") {
-        rgbLed->setColor(RGBLed::BLUE);
+        modules->getRGBLed()->setColor(RGBLed::BLUE);
         Console::printlnR(F("Color: Blue"));
         return true;
     }
     if (command == "RGB YELLOW") {
-        rgbLed->setColor(RGBLed::YELLOW);
+        modules->getRGBLed()->setColor(RGBLed::YELLOW);
         Console::printlnR(F("Color: Yellow"));
         return true;
     }
     if (command == "RGB CYAN") {
-        rgbLed->setColor(RGBLed::CYAN);
+        modules->getRGBLed()->setColor(RGBLed::CYAN);
         Console::printlnR(F("Color: Cyan"));
         return true;
     }
     if (command == "RGB MAGENTA") {
-        rgbLed->setColor(RGBLed::MAGENTA);
+        modules->getRGBLed()->setColor(RGBLed::MAGENTA);
         Console::printlnR(F("Color: Magenta"));
         return true;
     }
     if (command == "RGB WHITE") {
-        rgbLed->setColor(RGBLed::WHITE);
+        modules->getRGBLed()->setColor(RGBLed::WHITE);
         Console::printlnR(F("Color: White"));
         return true;
     }
     if (command == "RGB ORANGE") {
-        rgbLed->setColor(RGBLed::ORANGE);
+        modules->getRGBLed()->setColor(RGBLed::ORANGE);
         Console::printlnR(F("Color: Orange"));
         return true;
     }
     if (command == "RGB PURPLE") {
-        rgbLed->setColor(RGBLed::PURPLE);
+        modules->getRGBLed()->setColor(RGBLed::PURPLE);
         Console::printlnR(F("Color: Purple"));
         return true;
     }
@@ -900,7 +921,7 @@ bool CommandListener::processRGBCommands(const String& command) {
             return true;
         }
         
-        rgbLed->fadeTo(targetColor, duration);
+        modules->getRGBLed()->fadeTo(targetColor, duration);
         Console::printR(F("Fading to "));
         Console::printR(colorName);
         Console::printR(F(" in "));
@@ -926,7 +947,7 @@ bool CommandListener::processRGBCommands(const String& command) {
             return true;
         }
         
-        rgbLed->setBrightness(brightness);
+        modules->getRGBLed()->setBrightness(brightness);
         Console::printR(F("Brightness: "));
         Console::printR(String(brightness));
         Console::printlnR(F("%"));
@@ -951,7 +972,7 @@ bool CommandListener::processRGBCommands(const String& command) {
             return true;
         }
         
-        rgbLed->turnOnFor(duration);
+        modules->getRGBLed()->turnOnFor(duration);
         Console::printR(F("LED on for "));
         Console::printR(String(duration));
         Console::printlnR(F("ms"));
@@ -994,7 +1015,7 @@ bool CommandListener::processRGBCommands(const String& command) {
         }
         
         RGBLed::Color targetColor = {(uint8_t)r, (uint8_t)g, (uint8_t)b};
-        rgbLed->fadeTo(targetColor, duration);
+        modules->getRGBLed()->fadeTo(targetColor, duration);
         Console::printlnR(F("Fading to new color..."));
         return true;
     }
@@ -1033,7 +1054,7 @@ bool CommandListener::processRGBCommands(const String& command) {
             return true;
         }
         
-        rgbLed->blink(interval, count);
+        modules->getRGBLed()->blink(interval, count);
         Console::printR(F("Blinking: "));
         Console::printR(String(interval));
         Console::printR(F("ms, "));
@@ -1048,7 +1069,7 @@ bool CommandListener::processRGBCommands(const String& command) {
     
     // RGB STOPBLINK - Stop blinking
     if (command == "RGB STOPBLINK") {
-        rgbLed->stopBlink();
+        modules->getRGBLed()->stopBlink();
         Console::printlnR(F("Blinking stopped"));
         return true;
     }
@@ -1058,16 +1079,16 @@ bool CommandListener::processRGBCommands(const String& command) {
         Console::printlnR(F("RGB LED Test Sequence:"));
         Console::printlnR(F("  Red → Green → Blue → Off"));
         
-        rgbLed->setColor(RGBLed::RED);
-        rgbLed->turnOnFor(1000);
+        modules->getRGBLed()->setColor(RGBLed::RED);
+        modules->getRGBLed()->turnOnFor(1000);
         delay(1000);
         
-        rgbLed->setColor(RGBLed::GREEN);
-        rgbLed->turnOnFor(1000);
+        modules->getRGBLed()->setColor(RGBLed::GREEN);
+        modules->getRGBLed()->turnOnFor(1000);
         delay(1000);
         
-        rgbLed->setColor(RGBLed::BLUE);
-        rgbLed->turnOnFor(1000);
+        modules->getRGBLed()->setColor(RGBLed::BLUE);
+        modules->getRGBLed()->turnOnFor(1000);
         
         Console::printlnR(F("Test complete!"));
         return true;
@@ -1089,5 +1110,149 @@ bool CommandListener::processRGBCommands(const String& command) {
     Console::printlnR(F("  RGB BLINK <interval> [cnt]  - Blink LED"));
     Console::printlnR(F("  RGB STOPBLINK               - Stop blinking"));
     Console::printlnR(F("  RGB TEST                    - Run test sequence"));
+    return true;
+}
+
+/**
+ * Process touch sensor commands
+ */
+bool CommandListener::processTouchCommands(const String& command) {
+    if (!command.startsWith("TOUCH")) {
+        return false;
+    }
+    
+    if (!modules || !modules->hasTouchSensor()) {
+        Console::printlnR(F("ERROR: Touch sensor not initialized"));
+        return true;
+    }
+    
+    // TOUCH STATUS - Show sensor status
+    if (command == "TOUCH STATUS") {
+        Console::printlnR(modules->getTouchSensor()->getStatus());
+        return true;
+    }
+    
+    // TOUCH RESET - Reset statistics
+    if (command == "TOUCH RESET") {
+        modules->getTouchSensor()->resetStatistics();
+        Console::printlnR(F("Touch sensor statistics reset"));
+        return true;
+    }
+    
+    // TOUCH DEBOUNCE <ms> - Set debounce delay
+    if (command.startsWith("TOUCH DEBOUNCE")) {
+        String delayStr = command.substring(15);
+        delayStr.trim();
+        
+        if (delayStr.length() == 0) {
+            Console::printlnR(F("Usage: TOUCH DEBOUNCE <milliseconds>"));
+            Console::printR(F("Current: "));
+            Console::printR(String(modules->getTouchSensor()->getDebounceDelay()));
+            Console::printlnR(F("ms"));
+            Console::printlnR(F("Recommended: 20-100ms (50ms default)"));
+            return true;
+        }
+        
+        unsigned long delay = delayStr.toInt();
+        if (delay < 10 || delay > 500) {
+            Console::printlnR(F("ERROR: Debounce delay must be 10-500ms"));
+            return true;
+        }
+        
+        modules->getTouchSensor()->setDebounceDelay(delay);
+        Console::printR(F("Debounce delay set to "));
+        Console::printR(String(delay));
+        Console::printlnR(F("ms"));
+        return true;
+    }
+    
+    // TOUCH LONGPRESS <ms> - Set long press duration
+    if (command.startsWith("TOUCH LONGPRESS")) {
+        String durationStr = command.substring(16);
+        durationStr.trim();
+        
+        if (durationStr.length() == 0) {
+            Console::printlnR(F("Usage: TOUCH LONGPRESS <milliseconds>"));
+            Console::printR(F("Current: "));
+            Console::printR(String(modules->getTouchSensor()->getLongPressDuration()));
+            Console::printlnR(F("ms"));
+            Console::printlnR(F("Recommended: 500-3000ms (1000ms default)"));
+            return true;
+        }
+        
+        unsigned long duration = durationStr.toInt();
+        if (duration < 100 || duration > 10000) {
+            Console::printlnR(F("ERROR: Long press duration must be 100-10000ms"));
+            return true;
+        }
+        
+        modules->getTouchSensor()->setLongPressDuration(duration);
+        Console::printR(F("Long press duration set to "));
+        Console::printR(String(duration));
+        Console::printlnR(F("ms"));
+        return true;
+    }
+    
+    // TOUCH LONGPRESS ENABLE - Enable long press detection
+    if (command == "TOUCH LONGPRESS ENABLE") {
+        modules->getTouchSensor()->setLongPressEnabled(true);
+        Console::printlnR(F("Long press detection enabled"));
+        return true;
+    }
+    
+    // TOUCH LONGPRESS DISABLE - Disable long press detection
+    if (command == "TOUCH LONGPRESS DISABLE") {
+        modules->getTouchSensor()->setLongPressEnabled(false);
+        Console::printlnR(F("Long press detection disabled"));
+        return true;
+    }
+    
+    // TOUCH TEST - Test touch detection
+    if (command == "TOUCH TEST") {
+        Console::printlnR(F("Touch Sensor Test Mode"));
+        Console::printlnR(F("Touch the sensor to see detection..."));
+        Console::printlnR(F("(Type any command to exit test mode)"));
+        
+        // Simple test loop - will exit on next command
+        unsigned long startTime = millis();
+        bool lastState = modules->getTouchSensor()->isTouched();
+        
+        while (millis() - startTime < 10000) {  // 10 second timeout
+            modules->getTouchSensor()->update();
+            bool currentState = modules->getTouchSensor()->isTouched();
+            
+            if (currentState != lastState) {
+                if (currentState) {
+                    Console::printlnR(F("✓ TOUCHED"));
+                } else {
+                    Console::printR(F("  Released (duration: "));
+                    Console::printR(String(modules->getTouchSensor()->getTouchDuration()));
+                    Console::printlnR(F("ms)"));
+                }
+                lastState = currentState;
+            }
+            
+            // Check for serial input to exit
+            if (Serial.available() > 0) {
+                Console::printlnR(F("Test mode exited"));
+                return true;
+            }
+            
+            delay(10);
+        }
+        
+        Console::printlnR(F("Test timeout - returning to normal operation"));
+        return true;
+    }
+    
+    // Unknown TOUCH command
+    Console::printlnR(F("Unknown TOUCH command. Available:"));
+    Console::printlnR(F("  TOUCH STATUS              - Show sensor status"));
+    Console::printlnR(F("  TOUCH RESET               - Reset statistics"));
+    Console::printlnR(F("  TOUCH DEBOUNCE <ms>       - Set debounce delay"));
+    Console::printlnR(F("  TOUCH LONGPRESS <ms>      - Set long press duration"));
+    Console::printlnR(F("  TOUCH LONGPRESS ENABLE    - Enable long press"));
+    Console::printlnR(F("  TOUCH LONGPRESS DISABLE   - Disable long press"));
+    Console::printlnR(F("  TOUCH TEST                - Test touch detection"));
     return true;
 }

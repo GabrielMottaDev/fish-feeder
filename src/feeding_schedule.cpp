@@ -1,4 +1,7 @@
 #include "feeding_schedule.h"
+#include "module_manager.h"
+#include "feeding_controller.h"
+#include "rtc_module.h"
 #include "config.h"
 
 /**
@@ -10,8 +13,7 @@ FeedingSchedule::FeedingSchedule() :
     scheduleEnabled(true),
     lastCompletedFeeding(DateTime(2000, 1, 1, 0, 0, 0)), // Default old date
     persistenceInitialized(false),
-    feedingController(nullptr),
-    rtcModule(nullptr),
+    modules(nullptr),
     feedingInProgress(false),
     nextScheduledTime(DateTime(2000, 1, 1, 0, 0, 0)),
     nextScheduleIndex(0),
@@ -26,9 +28,8 @@ FeedingSchedule::FeedingSchedule() :
 /**
  * Initialize the feeding schedule system
  */
-void FeedingSchedule::begin(FeedingController* controller, RTCModule* rtc) {
-    feedingController = controller;
-    rtcModule = rtc;
+void FeedingSchedule::begin(ModuleManager* moduleManager) {
+    modules = moduleManager;
     initializePersistence();
     loadLastFeedingFromNVRAM();
     
@@ -162,8 +163,8 @@ void FeedingSchedule::calculateNextFeeding() {
     
     // Get current time from RTC
     DateTime now;
-    if (rtcModule) {
-        now = rtcModule->now();
+    if (modules && modules->hasRTCModule()) {
+        now = modules->getRTCModule()->now();
     } else {
         now = DateTime(); // Fallback to default if RTC not available
     }
@@ -216,7 +217,7 @@ DateTime FeedingSchedule::getScheduleDateTime(const ScheduledFeeding& schedule, 
  * Main processing method - NON-BLOCKING
  */
 void FeedingSchedule::processSchedules(const DateTime& currentTime) {
-    if (!scheduleEnabled || scheduleCount == 0 || !schedules || !feedingController) {
+    if (!scheduleEnabled || scheduleCount == 0 || !schedules || !modules || !modules->hasFeedingController()) {
         return;
     }
     
@@ -287,7 +288,7 @@ void FeedingSchedule::executeFeeding(const ScheduledFeeding& schedule) {
     }
     
     // Start feeding via controller
-    if (feedingController->dispenseFoodAsync(schedule.portions)) {
+    if (modules->getFeedingController()->dispenseFoodAsync(schedule.portions)) {
         feedingInProgress = true;
     } else {
         Console::printlnR(F("FeedingSchedule: ERROR - Failed to start feeding"));
@@ -547,7 +548,7 @@ String FeedingSchedule::formatSchedule(const ScheduledFeeding& schedule) {
 void FeedingSchedule::printDiagnostics() {
     Console::printlnR(F("\n=== FEEDING SCHEDULE DIAGNOSTICS ==="));
     Console::printlnR("Memory - schedules pointer: " + String((unsigned long)schedules, HEX));
-    Console::printlnR("Memory - feedingController pointer: " + String((unsigned long)feedingController, HEX));
+    Console::printlnR("Memory - feedingController pointer: " + String((unsigned long)(modules ? modules->getFeedingController() : nullptr), HEX));
     Console::printlnR("State - scheduleEnabled: " + String(scheduleEnabled));
     Console::printlnR("State - feedingInProgress: " + String(feedingInProgress));
     Console::printlnR("State - persistenceInitialized: " + String(persistenceInitialized));

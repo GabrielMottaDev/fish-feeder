@@ -1,11 +1,14 @@
 #include "ntp_sync.h"
+#include "module_manager.h"
+#include "rtc_module.h"
+#include "wifi_controller.h"
 #include "console_manager.h"
 
 /**
  * Constructor: Initialize NTP synchronization module
  */
-NTPSync::NTPSync(RTCModule* rtc, WiFiController* wifi)
-    : rtcModule(rtc), wifiController(wifi), ntpInitialized(false),
+NTPSync::NTPSync(ModuleManager* moduleManager)
+    : modules(moduleManager), ntpInitialized(false),
       syncInProgress(false), lastSyncAttempt(0), lastSuccessfulSync(0),
       wifiConnectedTime(0), initialSyncPending(false),
       syncStartTime(0), lastSyncCheck(0), waitingForNTPResponse(false),
@@ -21,7 +24,7 @@ NTPSync::NTPSync(RTCModule* rtc, WiFiController* wifi)
 bool NTPSync::begin() {
     Console::printlnR(F("=== NTP Time Synchronization Initialization ==="));
     
-    if (!rtcModule) {
+    if (!modules || !modules->hasRTCModule()) {
         Console::printlnR(F("ERROR: RTC module not available for NTP sync"));
         return false;
     }
@@ -66,7 +69,7 @@ bool NTPSync::begin() {
  */
 void NTPSync::handleNTPSync() {
     // Skip if WiFi not connected
-    if (!wifiController->isWiFiConnected()) {
+    if (!modules->getWiFiController()->isWiFiConnected()) {
         // Reset sync state if WiFi disconnected during sync
         if (syncInProgress) {
             syncInProgress = false;
@@ -110,7 +113,7 @@ bool NTPSync::forceSyncNow() {
         return false;
     }
     
-    if (!wifiController->isWiFiConnected()) {
+    if (!modules->getWiFiController()->isWiFiConnected()) {
         Console::printlnR(F("Cannot sync NTP: WiFi not connected"));
         return false;
     }
@@ -366,7 +369,7 @@ void NTPSync::updateRTCFromNTP() {
                      timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     
     // Get current RTC time for comparison
-    DateTime rtcTime = rtcModule->now();
+    DateTime rtcTime = modules->getRTCModule()->now();
     
     Console::printR(F("NTP Time: "));
     Console::printlnR(formatDateTime(ntpTime));
@@ -381,7 +384,7 @@ void NTPSync::updateRTCFromNTP() {
     
     // Update RTC if difference is significant (more than 2 seconds)
     if (abs(timeDiff) > 2) {
-        rtcModule->adjust(ntpTime);
+        modules->getRTCModule()->adjust(ntpTime);
         Console::printlnR(F("RTC updated with NTP time"));
     } else {
         Console::printlnR(F("RTC time is already accurate (no update needed)"));
@@ -471,7 +474,7 @@ void NTPSync::showSyncStatus() {
     }
     
     Console::printR(F("WiFi Connected: "));
-    Console::printlnR(wifiController->isWiFiConnected() ? F("Yes") : F("No"));
+    Console::printlnR(modules->getWiFiController()->isWiFiConnected() ? F("Yes") : F("No"));
     
     if (lastSuccessfulSync > 0) {
         Console::printR(F("Last Successful Sync: "));
@@ -786,7 +789,7 @@ bool NTPSync::getTimeFromWorldTimeAPI() {
                 DateTime dt(year, month, day, hour, minute, second);
                 
                 // Update RTC
-                rtcModule->adjust(dt);
+                modules->getRTCModule()->adjust(dt);
                 Console::printlnR(F("✓ RTC updated from WorldTimeAPI (local time)"));
                 return true;
             }
@@ -848,7 +851,7 @@ bool NTPSync::getTimeFromTimeAPI() {
     DateTime parsedTime;
     if (parseTimeAPIResponse(response, parsedTime)) {
         // Update RTC with parsed local time
-        rtcModule->adjust(parsedTime);
+        modules->getRTCModule()->adjust(parsedTime);
         Console::printlnR(F("✓ RTC updated from TimeAPI (local time)"));
         return true;
     }
@@ -1006,7 +1009,7 @@ bool NTPSync::getTimeFromWorldClockAPI() {
                 Console::printlnR(formatDateTime(localTime));
                 
                 // Update RTC with local time
-                rtcModule->adjust(localTime);
+                modules->getRTCModule()->adjust(localTime);
                 Console::printlnR(F("✓ RTC updated from WorldClockAPI (UTC + offset)"));
                 return true;
             }
@@ -1058,7 +1061,7 @@ bool NTPSync::setTimeFromUnixTimestamp(unsigned long timestamp, bool applyOffset
     Console::printlnR(formatDateTime(dt));
     
     // Update RTC
-    rtcModule->adjust(dt);
+    modules->getRTCModule()->adjust(dt);
     Console::printlnR(F("✓ RTC updated from HTTP timestamp"));
     return true;
 }

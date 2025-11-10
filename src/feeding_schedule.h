@@ -4,12 +4,12 @@
 #include <RTClib.h>
 #include <Preferences.h>
 #include "console_manager.h"
-#include "feeding_controller.h"
-#include "rtc_module.h"
 #include "config.h"
 
-// Forward declaration
+// Forward declarations
+class ModuleManager;
 class FeedingController;
+class RTCModule;
 
 /**
  * FeedingSchedule Class
@@ -20,6 +20,10 @@ class FeedingController;
  * - Missed feeding recovery with tolerance
  * - Integration with FeedingController for actual feeding
  * - Real-time schedule management
+ * 
+ * Architecture:
+ * - Uses ModuleManager for accessing FeedingController and RTCModule
+ * - Reduces coupling between modules
  */
 class FeedingSchedule {
 private:
@@ -34,9 +38,8 @@ private:
     DateTime lastCompletedFeeding; // Last successful feeding time
     bool persistenceInitialized;   // NVRAM initialization status
     
-    // Controller and module references
-    FeedingController* feedingController;
-    RTCModule* rtcModule;
+    // Reference to ModuleManager
+    ModuleManager* modules;
     
     // State management
     bool feedingInProgress;         // Current feeding status
@@ -63,7 +66,7 @@ private:
 public:
     // Constructor and initialization
     FeedingSchedule();
-    void begin(FeedingController* controller, RTCModule* rtc);
+    void begin(ModuleManager* moduleManager);
     
     // Schedule management
     void setSchedules(ScheduledFeeding* scheduleArray, uint8_t count);

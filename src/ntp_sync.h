@@ -4,9 +4,13 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <time.h>
-#include "rtc_module.h"
-#include "wifi_controller.h"
+#include <RTClib.h>
 #include "config.h"
+
+// Forward declarations
+class ModuleManager;
+class RTCModule;
+class WiFiController;
 
 /**
  * NTPSync Class
@@ -22,11 +26,14 @@
  * - Daylight saving time support
  * - Error handling and retry logic
  * - Status reporting and diagnostics
+ * 
+ * Architecture:
+ * - Uses ModuleManager for accessing RTC and WiFi modules
+ * - Reduces coupling between modules
  */
 class NTPSync {
 private:
-    RTCModule* rtcModule;
-    WiFiController* wifiController;
+    ModuleManager* modules;
     
     // Sync state management
     bool ntpInitialized;
@@ -77,7 +84,7 @@ private:
     
 public:
     // Constructor
-    NTPSync(RTCModule* rtc, WiFiController* wifi);
+    NTPSync(ModuleManager* moduleManager);
     
     // Initialization
     bool begin();

@@ -93,6 +93,29 @@ extern const uint8_t RGB_LED_TYPE;
 // RGB LED maintenance task interval (milliseconds)
 extern const unsigned long RGB_LED_MAINTENANCE_INTERVAL;
 
+/**
+ * Touch Sensor Configuration (TTP223)
+ * 
+ * Settings for TTP223 capacitive touch sensor module.
+ * Used for manual user interaction and emergency controls.
+ * Hardware: TTP223 module connected to GPIO pin
+ */
+
+// GPIO pin for touch sensor input
+extern const uint8_t TOUCH_SENSOR_PIN;
+
+// Touch sensor active logic (false = active HIGH, true = active LOW)
+extern const bool TOUCH_SENSOR_ACTIVE_LOW;
+
+// Touch sensor debounce delay (milliseconds)
+extern const unsigned long TOUCH_SENSOR_DEBOUNCE_DELAY;
+
+// Touch sensor long press duration (milliseconds)
+extern const unsigned long TOUCH_SENSOR_LONG_PRESS_DURATION;
+
+// Touch sensor maintenance task interval (milliseconds)
+extern const unsigned long TOUCH_SENSOR_MAINTENANCE_INTERVAL;
+
 // ============================================================================
 // SERIAL COMMUNICATION CONFIGURATION
 // ============================================================================

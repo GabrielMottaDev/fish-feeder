@@ -1,4 +1,5 @@
 #include "wifi_controller.h"
+#include "module_manager.h"
 #include "feeding_schedule.h"
 #include "feeding_controller.h"
 #include "console_manager.h"
@@ -14,7 +15,7 @@ WiFiController::WiFiController()
       portalStartRequested(false), portalAPName(""), portalStartTime(0), shutdownRequested(false),
       connectionState(WIFI_IDLE), connectionStateTime(0), connectionAttempts(0),
       pendingSSID(""), pendingPassword(""), pendingSaveCredentials(false),
-      feedingSchedule(nullptr), feedingController(nullptr) {
+      modules(nullptr) {
 }
 
 /**
@@ -68,19 +69,11 @@ bool WiFiController::begin() {
 }
 
 /**
- * Set reference to FeedingSchedule for web interface access
+ * Set reference to ModuleManager for accessing other system components
  */
-void WiFiController::setFeedingSchedule(FeedingSchedule* schedule) {
-    feedingSchedule = schedule;
-    Console::printlnR(F("WiFiController: FeedingSchedule reference configured"));
-}
-
-/**
- * Set reference to FeedingController for manual feeding operations
- */
-void WiFiController::setFeedingController(FeedingController* controller) {
-    feedingController = controller;
-    Console::printlnR(F("WiFiController: FeedingController reference configured"));
+void WiFiController::setModuleManager(ModuleManager* moduleManager) {
+    modules = moduleManager;
+    Console::printlnR(F("WiFiController: ModuleManager reference configured"));
 }
 
 /**
@@ -93,15 +86,15 @@ void WiFiController::registerAllEndpoints() {
     
     // Verify all components are available
     Console::printlnR("✓ Server: " + String(wifiManager.server ? "Available" : "NULL"));
-    Console::printlnR("✓ FeedingSchedule: " + String(feedingSchedule ? "Available" : "NULL"));
-    Console::printlnR("✓ FeedingController: " + String(feedingController ? "Available" : "NULL"));
+    Console::printlnR("✓ modules->getFeedingSchedule(): " + String(modules && modules->hasFeedingSchedule() ? "Available" : "NULL"));
+    Console::printlnR("✓ modules->getFeedingController(): " + String(modules && modules->hasFeedingController() ? "Available" : "NULL"));
     
     if (!wifiManager.server) {
         Console::printlnR("❌ ERROR: Web server not available");
         return;
     }
     
-    if (!feedingSchedule || !feedingController) {
+    if (!modules || !modules->getFeedingSchedule() || !modules->getFeedingController()) {
         Console::printlnR("❌ ERROR: Components not ready for endpoint registration");
         return;
     }
@@ -115,8 +108,8 @@ void WiFiController::registerAllEndpoints() {
     Console::printlnR("✓ Registered: /api/test");
     
     wifiManager.server->on("/api/feed-test", HTTP_GET, [this]() {
-        if (feedingController && feedingController->isReady()) {
-            feedingController->dispenseFoodAsync(2);
+        if (modules && modules->getFeedingController() && modules->getFeedingController()->isReady()) {
+            modules->getFeedingController()->dispenseFoodAsync(2);
             wifiManager.server->send(200, "application/json", "{\"success\":true,\"message\":\"Test feeding started (2 portions)\"}");
         } else {
             wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Feeding controller not ready\"}");
@@ -1041,9 +1034,10 @@ void WiFiController::startAlwaysOnPortal() {
                 wifiManager.server->send(200, "text/html; charset=utf-8", html);
             });
             
-            // Setup schedule API endpoints directly
-            setupScheduleAPIEndpoints();
-            Console::printlnR("=== DIRECT ENDPOINTS REGISTERED ===");
+            // NOTE: Schedule API endpoints will be registered later via registerAllEndpoints()
+            // after ModuleManager is configured in main.cpp
+            Console::printlnR("=== BASIC ENDPOINTS REGISTERED ===");
+            Console::printlnR("NOTE: API endpoints will be registered after ModuleManager setup");
         } else {
             Console::printlnR("=== ERROR: WiFiManager server is NULL ===");
         }
@@ -1678,7 +1672,14 @@ String WiFiController::generateScheduleManagementPage() {
  */
 void WiFiController::setupScheduleAPIEndpoints() {
     Console::printlnR("=== SETTING UP SCHEDULE API ENDPOINTS ===");
-    if (!feedingSchedule) {
+    
+    // CRITICAL: Check modules pointer FIRST
+    if (!modules) {
+        Console::printlnR(F("❌ CRITICAL ERROR: ModuleManager not set!"));
+        return;
+    }
+    
+    if (!modules->getFeedingSchedule()) {
         Console::printlnR(F("WARNING: FeedingSchedule not available for API endpoints"));
         return;
     }
@@ -1689,9 +1690,10 @@ void WiFiController::setupScheduleAPIEndpoints() {
         Console::printlnR("API: Status request received");
         String json = "{";
         
-        if (feedingSchedule) {
+        // CRITICAL: Verify modules pointer before use
+        if (modules && modules->getFeedingSchedule()) {
             // Get last feeding time
-            DateTime lastFeeding = feedingSchedule->getLastCompletedFeeding();
+            DateTime lastFeeding = modules->getFeedingSchedule()->getLastCompletedFeeding();
             json += "\"lastFeeding\":\"";
             if (lastFeeding.year() == 2000) {
                 json += "Never";
@@ -1710,7 +1712,7 @@ void WiFiController::setupScheduleAPIEndpoints() {
             json += "\",";
             
             // Get next feeding time
-            DateTime nextFeeding = feedingSchedule->getNextScheduledTime();
+            DateTime nextFeeding = modules->getFeedingSchedule()->getNextScheduledTime();
             json += "\"nextFeeding\":\"";
             if (nextFeeding.year() == 2000 || nextFeeding.year() >= 2099) {
                 json += "No active schedules";
@@ -1729,13 +1731,13 @@ void WiFiController::setupScheduleAPIEndpoints() {
             json += "\",";
             
             json += "\"scheduleEnabled\":";
-            json += feedingSchedule->isScheduleEnabled() ? "true" : "false";
+            json += modules->getFeedingSchedule()->isScheduleEnabled() ? "true" : "false";
             json += ",\"scheduleCount\":";
-            json += String(feedingSchedule->getScheduleCount());
+            json += String(modules->getFeedingSchedule()->getScheduleCount());
             json += ",\"tolerance\":";
-            json += String(feedingSchedule->getTolerance());
+            json += String(modules->getFeedingSchedule()->getTolerance());
             json += ",\"recovery\":";
-            json += String(feedingSchedule->getMaxRecoveryHours());
+            json += String(modules->getFeedingSchedule()->getMaxRecoveryHours());
         } else {
             json += "\"lastFeeding\":\"System offline\"";
             json += ",\"nextFeeding\":\"System offline\"";
@@ -1755,9 +1757,9 @@ void WiFiController::setupScheduleAPIEndpoints() {
         Console::printlnR("API: Schedules request received");
         String json = "[";
         
-        if (feedingSchedule && feedingSchedule->getScheduleCount() > 0) {
-            for (uint8_t i = 0; i < feedingSchedule->getScheduleCount(); i++) {
-                ScheduledFeeding schedule = feedingSchedule->getSchedule(i);
+        if (modules && modules->getFeedingSchedule() && modules->getFeedingSchedule()->getScheduleCount() > 0) {
+            for (uint8_t i = 0; i < modules->getFeedingSchedule()->getScheduleCount(); i++) {
+                ScheduledFeeding schedule = modules->getFeedingSchedule()->getSchedule(i);
                 
                 if (i > 0) json += ",";
                 json += "{";
@@ -1773,7 +1775,7 @@ void WiFiController::setupScheduleAPIEndpoints() {
         }
         
         json += "]";
-        Console::printlnR("API: Schedules response sent - " + String(feedingSchedule ? feedingSchedule->getScheduleCount() : 0) + " schedules");
+        Console::printlnR("API: Schedules response sent - " + String(modules && modules->getFeedingSchedule() ? modules->getFeedingSchedule()->getScheduleCount() : 0) + " schedules");
         wifiManager.server->send(200, "application/json", json);
     });
     
@@ -1815,27 +1817,27 @@ void WiFiController::setupScheduleAPIEndpoints() {
         
         // Check components availability
         Console::printlnR("Checking system components:");
-        Console::printlnR("  FeedingController available: " + String(feedingController ? "YES" : "NO"));
+        Console::printlnR("  modules->getFeedingController() available: " + String(modules->getFeedingController() ? "YES" : "NO"));
         
-        if (feedingController) {
-            Console::printlnR("  FeedingController ready: " + String(feedingController->isReady() ? "YES" : "NO"));
+        if (modules && modules->getFeedingController()) {
+            Console::printlnR("  modules->getFeedingController() ready: " + String(modules->getFeedingController()->isReady() ? "YES" : "NO"));
         }
         
-        Console::printlnR("  FeedingSchedule available: " + String(feedingSchedule ? "YES" : "NO"));
+        Console::printlnR("  modules->getFeedingSchedule() available: " + String(modules->getFeedingSchedule() ? "YES" : "NO"));
         
-        // Execute feeding via FeedingController
-        if (feedingController && feedingController->isReady()) {
+        // Execute feeding via modules->getFeedingController()
+        if (modules && modules->getFeedingController() && modules->getFeedingController()->isReady()) {
             Console::printlnR("Attempting to start feeding with " + String(portions) + " portions...");
-            bool success = feedingController->dispenseFoodAsync(portions);
-            Console::printlnR("FeedingController->dispenseFoodAsync() result: " + String(success ? "SUCCESS" : "FAILED"));
+            bool success = modules->getFeedingController()->dispenseFoodAsync(portions);
+            Console::printlnR("modules->getFeedingController()->dispenseFoodAsync() result: " + String(success ? "SUCCESS" : "FAILED"));
             
             if (success) {
                 // Update last feeding time in schedule with current time
-                if (feedingSchedule) {
+                if (modules && modules->getFeedingSchedule()) {
                     Console::printlnR("Recording manual feeding in schedule...");
-                    // Use current timestamp - FeedingSchedule will handle time conversion
+                    // Use current timestamp - modules->getFeedingSchedule() will handle time conversion
                     DateTime now = DateTime(millis() / 1000 + 946684800); // Convert millis to Unix timestamp
-                    feedingSchedule->recordManualFeeding(now);
+                    modules->getFeedingSchedule()->recordManualFeeding(now);
                     Console::printlnR("Manual feeding recorded successfully");
                 }
                 
@@ -1852,10 +1854,10 @@ void WiFiController::setupScheduleAPIEndpoints() {
                 Console::printlnR("=== API FEED REQUEST FAILED ===");
             }
         } else {
-            if (!feedingController) {
-                Console::printlnR("ERROR: FeedingController pointer is NULL");
-            } else if (!feedingController->isReady()) {
-                Console::printlnR("ERROR: FeedingController is not ready");
+            if (!modules->getFeedingController()) {
+                Console::printlnR("ERROR: modules->getFeedingController() pointer is NULL");
+            } else if (!modules->getFeedingController()->isReady()) {
+                Console::printlnR("ERROR: modules->getFeedingController() is not ready");
             }
             
             String response = "{\"success\":false,\"message\":\"Feeding controller not available\"}";
@@ -1868,8 +1870,13 @@ void WiFiController::setupScheduleAPIEndpoints() {
     
     // Toggle schedule system
     wifiManager.server->on("/api/schedule/toggle", HTTP_POST, [this]() {
-        bool currentState = feedingSchedule->isScheduleEnabled();
-        feedingSchedule->enableSchedule(!currentState);
+        if (!modules || !modules->getFeedingSchedule()) {
+            wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Schedule system not available\"}");
+            return;
+        }
+        
+        bool currentState = modules->getFeedingSchedule()->isScheduleEnabled();
+        modules->getFeedingSchedule()->enableSchedule(!currentState);
         
         String json = "{\"success\":true,\"enabled\":" + String(!currentState ? "true" : "false") + "}";
         wifiManager.server->send(200, "application/json", json);
@@ -1879,19 +1886,24 @@ void WiFiController::setupScheduleAPIEndpoints() {
     
     // Toggle individual schedule
     wifiManager.server->on("/api/schedule/toggle-item", HTTP_POST, [this]() {
+        if (!modules || !modules->getFeedingSchedule()) {
+            wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Schedule system not available\"}");
+            return;
+        }
+        
         if (!wifiManager.server->hasArg("index")) {
             wifiManager.server->send(400, "text/plain", "Missing index parameter");
             return;
         }
         
         int index = wifiManager.server->arg("index").toInt();
-        if (index < 0 || index >= feedingSchedule->getScheduleCount()) {
+        if (index < 0 || index >= modules->getFeedingSchedule()->getScheduleCount()) {
             wifiManager.server->send(400, "text/plain", "Invalid schedule index");
             return;
         }
         
-        bool currentState = feedingSchedule->isScheduleEnabled(index);
-        feedingSchedule->enableScheduleAtIndex(index, !currentState);
+        bool currentState = modules->getFeedingSchedule()->isScheduleEnabled(index);
+        modules->getFeedingSchedule()->enableScheduleAtIndex(index, !currentState);
         
         String json = "{\"success\":true,\"enabled\":" + String(!currentState ? "true" : "false") + "}";
         wifiManager.server->send(200, "application/json", json);
@@ -1901,6 +1913,11 @@ void WiFiController::setupScheduleAPIEndpoints() {
     
     // Set tolerance
     wifiManager.server->on("/api/schedule/tolerance", HTTP_POST, [this]() {
+        if (!modules || !modules->getFeedingSchedule()) {
+            wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Schedule system not available\"}");
+            return;
+        }
+        
         if (!wifiManager.server->hasArg("minutes")) {
             wifiManager.server->send(400, "text/plain", "Missing minutes parameter");
             return;
@@ -1912,7 +1929,7 @@ void WiFiController::setupScheduleAPIEndpoints() {
             return;
         }
         
-        feedingSchedule->setTolerance(minutes);
+        modules->getFeedingSchedule()->setTolerance(minutes);
         
         String json = "{\"success\":true,\"tolerance\":" + String(minutes) + "}";
         wifiManager.server->send(200, "application/json", json);
@@ -1922,6 +1939,11 @@ void WiFiController::setupScheduleAPIEndpoints() {
     
     // Set recovery period
     wifiManager.server->on("/api/schedule/recovery", HTTP_POST, [this]() {
+        if (!modules || !modules->getFeedingSchedule()) {
+            wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Schedule system not available\"}");
+            return;
+        }
+        
         if (!wifiManager.server->hasArg("hours")) {
             wifiManager.server->send(400, "text/plain", "Missing hours parameter");
             return;
@@ -1933,7 +1955,7 @@ void WiFiController::setupScheduleAPIEndpoints() {
             return;
         }
         
-        feedingSchedule->setMaxRecoveryHours(hours);
+        modules->getFeedingSchedule()->setMaxRecoveryHours(hours);
         
         String json = "{\"success\":true,\"recovery\":" + String(hours) + "}";
         wifiManager.server->send(200, "application/json", json);
@@ -1962,7 +1984,7 @@ void WiFiController::setupScheduleAPIEndpoints() {
         Console::printlnR("Adding schedule: " + String(hour) + ":" + String(minute) + ":" + 
                          String(second) + " - " + String(portions) + " portions");
         
-        if (feedingSchedule && feedingSchedule->addSchedule(hour, minute, second, portions, description.c_str())) {
+        if (modules && modules->getFeedingSchedule() && modules->getFeedingSchedule()->addSchedule(hour, minute, second, portions, description.c_str())) {
             String json = "{\"success\":true,\"message\":\"Schedule added successfully\"}";
             wifiManager.server->send(200, "application/json", json);
             Console::printlnR("API: Schedule added successfully");
@@ -1996,7 +2018,7 @@ void WiFiController::setupScheduleAPIEndpoints() {
         Console::printlnR("Editing schedule " + String(index) + ": " + String(hour) + ":" + 
                          String(minute) + ":" + String(second) + " - " + String(portions) + " portions");
         
-        if (feedingSchedule && feedingSchedule->editSchedule(index, hour, minute, second, portions, description.c_str())) {
+        if (modules && modules->getFeedingSchedule() && modules->getFeedingSchedule()->editSchedule(index, hour, minute, second, portions, description.c_str())) {
             String json = "{\"success\":true,\"message\":\"Schedule updated successfully\"}";
             wifiManager.server->send(200, "application/json", json);
             Console::printlnR("API: Schedule edited successfully");
@@ -2021,7 +2043,7 @@ void WiFiController::setupScheduleAPIEndpoints() {
         
         Console::printlnR("Deleting schedule " + String(index));
         
-        if (feedingSchedule && feedingSchedule->removeSchedule(index)) {
+        if (modules && modules->getFeedingSchedule() && modules->getFeedingSchedule()->removeSchedule(index)) {
             String json = "{\"success\":true,\"message\":\"Schedule deleted successfully\"}";
             wifiManager.server->send(200, "application/json", json);
             Console::printlnR("API: Schedule deleted successfully");
@@ -2035,3 +2057,4 @@ void WiFiController::setupScheduleAPIEndpoints() {
     Console::printlnR("=== SCHEDULE API ENDPOINTS SETUP COMPLETE ===");
     Console::printlnR("Endpoints registered: /api/status, /api/schedules, /api/feed, /api/schedule/*, etc.");
 }
+
