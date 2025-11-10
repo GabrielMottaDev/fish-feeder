@@ -34,6 +34,19 @@ public:
     };
 
     /**
+     * Device Status States
+     * Controls automatic LED behavior based on device state
+     */
+    enum DeviceStatus {
+        STATUS_BOOTING,        // Red 50% blinking 500ms
+        STATUS_WIFI_CONNECTING, // Blue 50% blinking 500ms
+        STATUS_TIME_SYNCING,   // Yellow 50% blinking 500ms
+        STATUS_READY,          // Green 60% static
+        STATUS_FEEDING,        // Green 60% blinking 250ms
+        STATUS_MANUAL          // Manual control (no automatic status)
+    };
+
+    /**
      * Predefined RGB Color Constants
      */
     struct Color {
@@ -168,6 +181,22 @@ public:
     void stopBlink();
 
     /**
+     * Set device status (automatic LED behavior)
+     * 
+     * Controls LED color, brightness, and blinking pattern based on device state.
+     * 
+     * @param status: Device status enum
+     */
+    void setDeviceStatus(DeviceStatus status);
+
+    /**
+     * Get current device status
+     * 
+     * @return: Current DeviceStatus enum
+     */
+    DeviceStatus getDeviceStatus() const;
+
+    /**
      * Update LED state (call regularly in loop)
      * 
      * Handles timed operations, fading, and blinking.
@@ -220,6 +249,9 @@ private:
     uint16_t _blinkTotalCount;       // Total number of complete blinks requested
     uint16_t _blinkCompletedCount;   // Number of complete blinks done
     bool _blinkCurrentlyOn;          // Current on/off state during blinking
+
+    // Device status state
+    DeviceStatus _deviceStatus;
 
     // PWM configuration
     static const uint32_t PWM_FREQUENCY = 5000;  // 5 kHz

@@ -36,7 +36,8 @@ RGBLed::RGBLed(uint8_t redPin, uint8_t greenPin, uint8_t bluePin, LEDType type)
       _blinkLastChange(0),
       _blinkTotalCount(0),
       _blinkCompletedCount(0),
-      _blinkCurrentlyOn(false) {
+      _blinkCurrentlyOn(false),
+      _deviceStatus(STATUS_MANUAL) {
     
     // Assign PWM channels (ensure we don't exceed 16 channels)
     _redChannel = nextPWMChannel++;
@@ -211,6 +212,69 @@ void RGBLed::stopBlink() {
     _blinkCompletedCount = 0;
     _blinkTotalCount = 0;
     turnOff();  // Final turn off
+}
+
+/**
+ * Set device status and apply corresponding LED pattern
+ */
+void RGBLed::setDeviceStatus(DeviceStatus status) {
+    _deviceStatus = status;
+    
+    // Stop any manual operations when entering automatic status mode
+    if (status != STATUS_MANUAL) {
+        _timedOperation = false;
+        _fadeInProgress = false;
+    }
+    
+    switch (status) {
+        case STATUS_BOOTING:
+            // Red 50% blinking 500ms
+            setColor(RED);
+            setBrightness(50);
+            blink(500, 0);  // Infinite blink
+            break;
+            
+        case STATUS_WIFI_CONNECTING:
+            // Blue 50% blinking 500ms
+            setColor(BLUE);
+            setBrightness(50);
+            blink(500, 0);  // Infinite blink
+            break;
+            
+        case STATUS_TIME_SYNCING:
+            // Yellow 50% blinking 500ms
+            setColor(YELLOW);
+            setBrightness(50);
+            blink(500, 0);  // Infinite blink
+            break;
+            
+        case STATUS_READY:
+            // Green 60% static
+            stopBlink();  // Stop any blinking
+            setColor(GREEN);
+            setBrightness(60);
+            turnOn();
+            break;
+            
+        case STATUS_FEEDING:
+            // Green 60% blinking 250ms
+            setColor(GREEN);
+            setBrightness(60);
+            blink(250, 0);  // Infinite blink
+            break;
+            
+        case STATUS_MANUAL:
+            // Manual control - do nothing, user controls LED
+            stopBlink();
+            break;
+    }
+}
+
+/**
+ * Get current device status
+ */
+RGBLed::DeviceStatus RGBLed::getDeviceStatus() const {
+    return _deviceStatus;
 }
 
 void RGBLed::update() {

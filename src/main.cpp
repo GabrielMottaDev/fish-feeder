@@ -135,11 +135,22 @@ void rgbLedMaintenanceTask() {
  * Runs every 100ms to check if async feeding is complete
  */
 void feedingMonitorTask() {
+    // 🚨 STATUS: FEEDING - Green 60% blinking 250ms
+    static bool wasFeeding = false;
+    
     if (isFeedingInProgress && !feedMotor.isRunning()) {
         // Feeding completed - this is a response to a previous FEED command
         Console::printlnR(F("Food dispensing completed successfully"));
         isFeedingInProgress = false;
         tFeedingMonitor.disable(); // Stop monitoring until next feeding
+        
+        // Return to ready status
+        rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
+        wasFeeding = false;
+    } else if (isFeedingInProgress && !wasFeeding) {
+        // Feeding just started
+        rgbLed.setDeviceStatus(RGBLed::STATUS_FEEDING);
+        wasFeeding = true;
     }
 }
 
@@ -163,14 +174,28 @@ void scheduleMonitorTask() {
  * Runs every 10 seconds to check connection and handle auto-reconnection
  */
 void wifiMonitorTask() {
-    // Store previous connection state to detect changes
+    // 🚨 STATUS: Track WiFi state for LED indication
     static bool wasConnected = false;
+    static bool wasConnecting = false;
     bool isConnected = wifiController.isWiFiConnected();
     
-    // Check if WiFi just got connected
-    if (isConnected && !wasConnected) {
+    // Detect connection state changes
+    if (!isConnected && wasConnected) {
+        // Just lost connection - show connecting status
+        if (rgbLed.getDeviceStatus() == RGBLed::STATUS_READY) {
+            rgbLed.setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
+            wasConnecting = true;
+        }
+    } else if (isConnected && !wasConnected) {
+        // Just got connected
         Console::printlnR(F("WiFi connection established - notifying NTP module"));
         ntpSync.onWiFiConnected();
+        
+        // Return to ready if we were connecting
+        if (wasConnecting) {
+            rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
+            wasConnecting = false;
+        }
     }
     
     wifiController.checkConnectionStatus();
@@ -184,7 +209,25 @@ void wifiMonitorTask() {
  * Runs every minute to check if NTP sync is needed
  */
 void ntpSyncTask() {
+    // 🚨 STATUS: TIME_SYNCING - Yellow 50% blinking 500ms
+    static bool wasSyncing = false;
+    bool isSyncing = ntpSync.isSyncInProgress();
+    
+    // Detect sync start
+    if (isSyncing && !wasSyncing) {
+        // Only change status if we're in ready state (don't override feeding)
+        if (rgbLed.getDeviceStatus() == RGBLed::STATUS_READY) {
+            rgbLed.setDeviceStatus(RGBLed::STATUS_TIME_SYNCING);
+        }
+    } else if (!isSyncing && wasSyncing) {
+        // Sync completed - return to ready if we were syncing
+        if (rgbLed.getDeviceStatus() == RGBLed::STATUS_TIME_SYNCING) {
+            rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
+        }
+    }
+    
     ntpSync.handleNTPSync();
+    wasSyncing = isSyncing;
 }
 
 // ============================================================================
@@ -280,10 +323,25 @@ void setup() {
   Console::printlnR(F("=== Fish Feeder System Starting ==="));
   Console::printlnR(F("ESP32 - TaskScheduler-based Non-blocking Architecture"));
   
+  // 🚨 CRITICAL: Initialize RGB LED FIRST for status indication
+  if (rgbLed.begin()) {
+    Console::printlnR(F("RGB LED: Initialized - Setting BOOTING status"));
+    // STATUS: BOOTING - Red 50% blinking 500ms
+    rgbLed.setDeviceStatus(RGBLed::STATUS_BOOTING);
+  } else {
+    Console::printlnR(F("ERROR: Failed to initialize RGB LED"));
+  }
+  
   // Initialize RTC module
   if (!rtcModule.begin()) {
     Console::printlnR(F("RTC initialization failed. System will continue with limited functionality."));
     Console::printlnR(F("Run 'rtcModule.scanI2C()' for manual diagnostics."));
+  }
+  
+  // Keep LED blinking during boot (non-blocking updates)
+  for (int i = 0; i < 10; i++) {
+    rgbLed.update();
+    delay(50);  // Small delays distributed throughout boot
   }
   
   // Initialize stepper motor
@@ -310,6 +368,12 @@ void setup() {
     }
   }
   
+  // Keep LED blinking during boot
+  for (int i = 0; i < 10; i++) {
+    rgbLed.update();
+    delay(50);
+  }
+  
   // Initialize vibration motor
   if (!vibrationMotor.begin()) {
     Console::printlnR(F("ERROR: Failed to initialize vibration motor"));
@@ -324,18 +388,21 @@ void setup() {
     Console::printlnR(F("Vibration Motor: Initialized on GPIO 26"));
   }
   
-  // Initialize RGB LED
-  if (!rgbLed.begin()) {
-    Console::printlnR(F("ERROR: Failed to initialize RGB LED"));
-    Console::printlnR(F("Check connections (ESP32 DevKit V1 30-pin):"));
-    Console::printlnR(F("4-Pin RGB LED (Common Cathode/Anode):"));
-    Console::printlnR(F("- Red   -> GPIO 25 -> 330Ω -> LED Red"));
-    Console::printlnR(F("- Green -> GPIO 27 -> 330Ω -> LED Green"));
-    Console::printlnR(F("- Blue  -> GPIO 32 -> 330Ω -> LED Blue"));
-    Console::printlnR(F("- Common pin -> GND (cathode) or VCC (anode)"));
-  } else {
-    Console::printR(F("RGB LED: Initialized (GPIO 25/27/32) - "));
-    Console::printlnR(RGB_LED_TYPE == 0 ? F("Common Cathode") : F("Common Anode"));
+  // Keep LED blinking during boot
+  for (int i = 0; i < 10; i++) {
+    rgbLed.update();
+    delay(50);
+  }
+  
+  Console::printlnR(F("=== Transitioning to WiFi Connection Phase ==="));
+  
+  // 🚨 STATUS: WIFI_CONNECTING - Blue 50% blinking 500ms
+  rgbLed.setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
+  
+  // Keep LED blinking during WiFi init
+  for (int i = 0; i < 10; i++) {
+    rgbLed.update();
+    delay(50);
   }
   
   // Initialize WiFi Controller
@@ -344,14 +411,34 @@ void setup() {
     Console::printlnR(F("WiFi functions will be limited"));
   }
   
+  // Keep LED blinking during WiFi connection (longer period)
+  Console::printlnR(F("Waiting for WiFi connection..."));
+  unsigned long wifiStartTime = millis();
+  while (!wifiController.isWiFiConnected() && (millis() - wifiStartTime < 10000)) {
+    rgbLed.update();
+    delay(100);  // Update LED while waiting
+  }
+  
   // Configure WiFi Controller with FeedingSchedule reference for web interface
   wifiController.setFeedingSchedule(&feedingSchedule);
   wifiController.setFeedingController(&feedingController);
+  
+  // Keep LED blinking
+  for (int i = 0; i < 10; i++) {
+    rgbLed.update();
+    delay(50);
+  }
   
   // Initialize NTP Synchronization
   if (!ntpSync.begin()) {
     Console::printlnR(F("WARNING: Failed to initialize NTP synchronization"));
     Console::printlnR(F("Automatic time sync will not be available"));
+  }
+  
+  // Keep LED blinking
+  for (int i = 0; i < 10; i++) {
+    rgbLed.update();
+    delay(50);
   }
   
   // Initialize Feeding Schedule System
@@ -398,6 +485,9 @@ void setup() {
   Console::printR(String(500));
   Console::printlnR(F("ms (non-blocking)"));
   Console::printlnR(F("System ready - Non-blocking operation active"));
+  
+  // 🚨 STATUS: READY - Green 60% static
+  rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
 }
 
 /**
