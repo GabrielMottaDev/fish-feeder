@@ -7,11 +7,11 @@ static uint8_t nextPWMChannel = 0;
 const RGBLed::Color RGBLed::RED = {255, 0, 0};
 const RGBLed::Color RGBLed::GREEN = {0, 255, 0};
 const RGBLed::Color RGBLed::BLUE = {0, 0, 255};
-const RGBLed::Color RGBLed::YELLOW = {255, 255, 0};
+const RGBLed::Color RGBLed::YELLOW = {255, 80, 0};
 const RGBLed::Color RGBLed::CYAN = {0, 255, 255};
 const RGBLed::Color RGBLed::MAGENTA = {255, 0, 255};
 const RGBLed::Color RGBLed::WHITE = {255, 255, 255};
-const RGBLed::Color RGBLed::ORANGE = {255, 165, 0};
+const RGBLed::Color RGBLed::ORANGE = {255, 20, 0};
 const RGBLed::Color RGBLed::PURPLE = {128, 0, 128};
 const RGBLed::Color RGBLed::OFF = {0, 0, 0};
 
