@@ -11,6 +11,9 @@ class ModuleManager;
 class FeedingController;
 class RTCModule;
 
+// Callback type for feeding monitor
+typedef void (*FeedingMonitorCallback)();
+
 /**
  * FeedingSchedule Class
  * 
@@ -41,6 +44,9 @@ private:
     // Reference to ModuleManager
     ModuleManager* modules;
     
+    // Callback for enabling feeding monitor
+    FeedingMonitorCallback enableMonitorCallback;
+    
     // State management
     bool feedingInProgress;         // Current feeding status
     DateTime nextScheduledTime;     // Next calculated feeding time
@@ -67,6 +73,9 @@ public:
     // Constructor and initialization
     FeedingSchedule();
     void begin(ModuleManager* moduleManager);
+    
+    // Set callback for enabling feeding monitor (called when schedule triggers feeding)
+    void setEnableMonitorCallback(FeedingMonitorCallback callback);
     
     // Schedule management
     void setSchedules(ScheduledFeeding* scheduleArray, uint8_t count);

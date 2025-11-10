@@ -14,6 +14,7 @@ FeedingSchedule::FeedingSchedule() :
     lastCompletedFeeding(DateTime(2000, 1, 1, 0, 0, 0)), // Default old date
     persistenceInitialized(false),
     modules(nullptr),
+    enableMonitorCallback(nullptr),
     feedingInProgress(false),
     nextScheduledTime(DateTime(2000, 1, 1, 0, 0, 0)),
     nextScheduleIndex(0),
@@ -39,6 +40,14 @@ void FeedingSchedule::begin(ModuleManager* moduleManager) {
     Console::printlnR(F("FeedingSchedule: System initialized"));
     Console::printlnR("Last feeding: " + formatTime(lastCompletedFeeding));
     Console::printlnR("Active schedules: " + String(scheduleCount));
+}
+
+/**
+ * Set callback for enabling feeding monitor
+ */
+void FeedingSchedule::setEnableMonitorCallback(FeedingMonitorCallback callback) {
+    enableMonitorCallback = callback;
+    Console::printlnR(F("FeedingSchedule: Monitor callback registered"));
 }
 
 /**
@@ -287,15 +296,40 @@ void FeedingSchedule::executeFeeding(const ScheduledFeeding& schedule) {
         Console::printlnR("Description: " + String(schedule.description));
     }
     
+    // Get current time from RTC BEFORE starting feeding
+    DateTime feedingTime;
+    if (modules && modules->hasRTCModule()) {
+        feedingTime = modules->getRTCModule()->now();
+    } else {
+        // Fallback if RTC not available
+        feedingTime = DateTime(2000, 1, 1, 0, 0, 0);
+    }
+    
+    // 🚨 CRITICAL FIX: Set global feeding state BEFORE starting motor
+    // This ensures RGB LED monitoring and status tracking work correctly
+    modules->setFeedingInProgress(true);
+    
     // Start feeding via controller
     if (modules->getFeedingController()->dispenseFoodAsync(schedule.portions)) {
         feedingInProgress = true;
+        
+        // 🚨 CRITICAL FIX: Enable feeding monitor to track completion and control LED
+        if (enableMonitorCallback) {
+            enableMonitorCallback();
+            Console::printlnR(F("FeedingSchedule: Feeding monitor enabled"));
+        } else {
+            Console::printlnR(F("FeedingSchedule: WARNING - No monitor callback registered"));
+        }
+        
+        Console::printlnR(F("FeedingSchedule: Feeding started successfully"));
     } else {
         Console::printlnR(F("FeedingSchedule: ERROR - Failed to start feeding"));
+        modules->setFeedingInProgress(false); // Reset on failure
+        feedingInProgress = false;
+        return; // Don't record feeding if it failed to start
     }
     
     // Record this feeding time
-    DateTime feedingTime = DateTime(); // Current time
     lastCompletedFeeding = feedingTime;
     saveLastFeedingToNVRAM(feedingTime);
 }

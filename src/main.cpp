@@ -561,6 +561,10 @@ void setup() {
   // DEFAULT_FEEDING_SCHEDULE is only used on first boot or NVRAM reset
   Console::printlnR(F("Feeding Schedule: System initialized with persistent schedules"));
   
+  // 🚨 CRITICAL: Register feeding monitor callback so schedule can enable LED monitoring
+  feedingSchedule.setEnableMonitorCallback(enableFeedingMonitor);
+  Console::printlnR(F("Feeding Schedule: Monitor callback registered"));
+  
   // Configure WiFi Controller with ModuleManager reference for web interface
   wifiController.setModuleManager(&moduleManager);
   
