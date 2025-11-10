@@ -352,34 +352,26 @@ void showTaskStatus() {
 void onTouchEvent(TouchSensor::TouchEvent event, unsigned long duration) {
     switch (event) {
         case TouchSensor::TOUCH_PRESSED:
-            // Start gentle vibration when touch begins
-            vibrationMotor.startContinuous(25);  // 25% intensity - very gentle
-            Console::println(F("Touch pressed - Vibration started (25%)"));
+            // Start stronger vibration when touch begins
+            vibrationMotor.startContinuous(60);  // 60% intensity for good tactile feedback
+            Console::println(F("Touch pressed - Vibration started"));
             break;
             
         case TouchSensor::TOUCH_RELEASED:
             // Stop vibration when touch is released
             vibrationMotor.stop();
-            Console::print(F("Touch released (duration: "));
+            Console::print(F("Touch released ("));
             Console::print(String(duration));
-            Console::println(F("ms) - Vibration stopped"));
+            Console::println(F("ms)"));
             break;
             
         case TouchSensor::TOUCH_LONG_PRESS:
-            // Brief pulse to indicate long press detected
+            // Brief stronger pulse for long press feedback
+            vibrationMotor.stop();
+            vibrationMotor.startTimed(80, 100);  // 80% for 100ms pulse
             Console::print(F("Long press detected ("));
             Console::print(String(duration));
-            Console::println(F("ms) - Pulse feedback"));
-            
-            // Brief stronger pulse for feedback (100ms at 50%)
-            vibrationMotor.stop();  // Stop current vibration
-            vibrationMotor.startTimed(50, 100);  // 50% for 100ms
-            delay(100);  // Wait for pulse to complete
-            
-            // Resume gentle vibration if still touched
-            if (touchSensor.isTouched()) {
-                vibrationMotor.startContinuous(25);  // Resume gentle vibration
-            }
+            Console::println(F("ms)"));
             break;
     }
 }

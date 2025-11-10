@@ -136,7 +136,8 @@ const bool TOUCH_SENSOR_ACTIVE_LOW = false;
 //   • Optimal (40-60ms): Good balance between responsiveness and stability
 //   • Too long (> 100ms): Feels sluggish to user interaction
 //   • Recommended: 50ms for responsive yet stable touch detection
-const unsigned long TOUCH_SENSOR_DEBOUNCE_DELAY = 50;
+//   • FAST RESPONSE: 20ms for minimal latency (if noise is not an issue)
+const unsigned long TOUCH_SENSOR_DEBOUNCE_DELAY = 20;
 
 // Touch sensor long press duration: 1000ms (1 second)
 // LONG PRESS DURATION CONSIDERATIONS:
@@ -146,10 +147,11 @@ const unsigned long TOUCH_SENSOR_DEBOUNCE_DELAY = 50;
 //   • Recommended: 1000ms for intuitive user experience
 const unsigned long TOUCH_SENSOR_LONG_PRESS_DURATION = 1000;
 
-// Touch sensor maintenance task interval: 20ms
+// Touch sensor maintenance task interval: 5ms
 // This task calls update() to handle debouncing and callbacks
-// 20ms provides 50Hz update rate for responsive touch detection
-const unsigned long TOUCH_SENSOR_MAINTENANCE_INTERVAL = 20;
+// 5ms provides 200Hz update rate for highly responsive touch detection
+// OPTIMIZATION: Reduced from 20ms to 5ms for faster tactile feedback
+const unsigned long TOUCH_SENSOR_MAINTENANCE_INTERVAL = 5;
 
 // ============================================================================
 // SERIAL COMMUNICATION CONFIGURATION VALUES

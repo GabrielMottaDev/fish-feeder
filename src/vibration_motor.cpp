@@ -1,4 +1,5 @@
 #include "vibration_motor.h"
+#include "console_manager.h"
 
 /**
  * VibrationMotor Implementation
