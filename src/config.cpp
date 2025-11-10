@@ -269,6 +269,9 @@ const unsigned long HTTP_TIME_TIMEOUT = 8000;
 // Wait 5 seconds after WiFi connection before first NTP sync
 const unsigned long NTP_INITIAL_SYNC_DELAY = 5000;
 
+// NVRAM key for storing last NTP sync timestamp
+const char* NTP_LAST_SYNC_NVRAM_KEY = "ntp_last_sync";
+
 // ============================================================================
 // FEEDING SCHEDULE CONFIGURATION VALUES
 // ============================================================================

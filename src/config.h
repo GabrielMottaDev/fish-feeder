@@ -252,6 +252,9 @@ extern const unsigned long HTTP_TIME_TIMEOUT;
 // Delay after WiFi connection before first NTP sync (milliseconds)
 extern const unsigned long NTP_INITIAL_SYNC_DELAY;
 
+// NVRAM key for storing last NTP sync timestamp (Unix time in seconds)
+extern const char* NTP_LAST_SYNC_NVRAM_KEY;
+
 // ============================================================================
 // FEEDING SCHEDULE CONFIGURATION
 // ============================================================================

@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <time.h>
 #include <RTClib.h>
+#include <Preferences.h>
 #include "config.h"
 
 // Forward declarations
@@ -34,6 +35,7 @@ class WiFiController;
 class NTPSync {
 private:
     ModuleManager* modules;
+    Preferences preferences; // NVRAM storage for last sync timestamp
     
     // Sync state management
     bool ntpInitialized;
@@ -44,6 +46,7 @@ private:
     bool initialSyncPending;
     unsigned long syncIntervalMs; // Dynamic sync interval
     bool previousWiFiSleepState; // Store previous WiFi sleep state (true = enabled)
+    unsigned long lastSyncTimestampNVRAM; // Last sync timestamp saved in NVRAM
     
     // Non-blocking sync state
     unsigned long syncStartTime;
@@ -72,6 +75,15 @@ private:
     void printSyncResult(bool success, const String& details = "");
     String formatDateTime(const DateTime& dt);
     const char* getCurrentNTPServer();
+    
+    // NVRAM helper methods
+    void saveLastSyncToNVRAM(unsigned long timestamp);
+    unsigned long loadLastSyncFromNVRAM();
+    
+    // Intelligent sync decision methods
+    bool shouldSyncNTP();
+    bool isRTCValid();
+    bool isRTCOutdated();
     
     // HTTP Time API fallback methods
     bool tryHTTPTimeFallback();

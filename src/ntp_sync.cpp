@@ -15,7 +15,8 @@ NTPSync::NTPSync(ModuleManager* moduleManager)
       currentServerIndex(0), needsReconfigure(true),
       syncAttempts(0), successfulSyncs(0), failedSyncs(0),
       httpFallbackInProgress(false), currentHTTPServerIndex(0), httpStartTime(0),
-      syncIntervalMs(NTP_SYNC_INTERVAL), previousWiFiSleepState(false) {
+      syncIntervalMs(NTP_SYNC_INTERVAL), previousWiFiSleepState(false),
+      lastSyncTimestampNVRAM(0) {
 }
 
 /**
@@ -27,6 +28,23 @@ bool NTPSync::begin() {
     if (!modules || !modules->hasRTCModule()) {
         Console::printlnR(F("ERROR: RTC module not available for NTP sync"));
         return false;
+    }
+    
+    // Initialize NVRAM preferences
+    if (!preferences.begin("ntp_sync", false)) {
+        Console::printlnR(F("ERROR: Failed to initialize NTP NVRAM"));
+        return false;
+    }
+    
+    // Load last sync timestamp from NVRAM
+    lastSyncTimestampNVRAM = loadLastSyncFromNVRAM();
+    
+    if (lastSyncTimestampNVRAM > 0) {
+        DateTime lastSyncDT(lastSyncTimestampNVRAM);
+        Console::printR(F("Last NTP sync from NVRAM: "));
+        Console::printlnR(formatDateTime(lastSyncDT));
+    } else {
+        Console::printlnR(F("No previous NTP sync found in NVRAM"));
     }
     
     Console::printR(F("Available Time Servers ("));
@@ -56,8 +74,28 @@ bool NTPSync::begin() {
     Console::printR(F("Sync Timeout: "));
     Console::printR(String(NTP_SYNC_TIMEOUT / 1000));
     Console::printlnR(F(" seconds"));
+    
+    // Intelligent sync decision
+    if (shouldSyncNTP()) {
+        Console::printlnR(F("NTP sync required - will sync when WiFi connects"));
+    } else {
+        Console::printlnR(F("NTP sync not required - RTC is up to date"));
+        Console::printR(F("Next sync in approximately "));
+        
+        DateTime rtcNow = modules->getRTCModule()->now();
+        unsigned long rtcTimestamp = rtcNow.unixtime();
+        unsigned long timeSinceLastSync = rtcTimestamp - lastSyncTimestampNVRAM;
+        
+        if (timeSinceLastSync < syncIntervalMs / 1000) {
+            unsigned long nextSyncSeconds = (syncIntervalMs / 1000) - timeSinceLastSync;
+            Console::printR(String(nextSyncSeconds / 3600));
+            Console::printlnR(F(" hours"));
+        } else {
+            Console::printlnR(F("0 hours (overdue)"));
+        }
+    }
+    
     Console::printlnR(F("NTP synchronization module initialized"));
-    Console::printlnR(F("Will sync automatically when WiFi is connected"));
     Console::printlnR(F("==============================================="));
     
     return true;
@@ -133,9 +171,16 @@ bool NTPSync::forceSyncNow() {
  * Called when WiFi connection is established
  */
 void NTPSync::onWiFiConnected() {
-    Console::printlnR(F("WiFi connected - scheduling initial NTP sync"));
-    wifiConnectedTime = millis();
-    initialSyncPending = true;
+    Console::printlnR(F("WiFi connected - checking if NTP sync is needed"));
+    
+    if (shouldSyncNTP()) {
+        Console::printlnR(F("Scheduling initial NTP sync"));
+        wifiConnectedTime = millis();
+        initialSyncPending = true;
+    } else {
+        Console::printlnR(F("NTP sync not needed - RTC is up to date"));
+        initialSyncPending = false;
+    }
 }
 
 /**
@@ -240,6 +285,10 @@ bool NTPSync::checkNTPSyncProgress() {
                         Console::printlnR(F("WiFi sleep mode restored"));
                     }
                     
+                    // 🚨 SAVE LAST SYNC TIMESTAMP TO NVRAM
+                    DateTime rtcNow = modules->getRTCModule()->now();
+                    saveLastSyncToNVRAM(rtcNow.unixtime());
+                    
                     printSyncResult(true, String("HTTP time from ") + entry.server);
                     return true; // Sync completed (success via HTTP)
                 }
@@ -343,6 +392,11 @@ bool NTPSync::checkNTPSyncProgress() {
         successMsg += entry.server;
         
         updateRTCFromNTP();
+        
+        // 🚨 SAVE LAST SYNC TIMESTAMP TO NVRAM
+        DateTime rtcNow = modules->getRTCModule()->now();
+        saveLastSyncToNVRAM(rtcNow.unixtime());
+        
         printSyncResult(true, successMsg);
         return true; // Sync completed (success)
     } else {
@@ -476,32 +530,75 @@ void NTPSync::showSyncStatus() {
     Console::printR(F("WiFi Connected: "));
     Console::printlnR(modules->getWiFiController()->isWiFiConnected() ? F("Yes") : F("No"));
     
+    // Show last sync from NVRAM
+    if (lastSyncTimestampNVRAM > 0) {
+        DateTime lastSyncDT(lastSyncTimestampNVRAM);
+        Console::printR(F("Last Sync (NVRAM): "));
+        Console::printlnR(formatDateTime(lastSyncDT));
+        
+        // Calculate time since last sync
+        DateTime rtcNow = modules->getRTCModule()->now();
+        unsigned long rtcTimestamp = rtcNow.unixtime();
+        
+        if (rtcTimestamp >= lastSyncTimestampNVRAM) {
+            unsigned long timeSince = rtcTimestamp - lastSyncTimestampNVRAM;
+            Console::printR(F("Time Since Last Sync: "));
+            Console::printR(String(timeSince / 3600));
+            Console::printR(F(" hours ("));
+            Console::printR(String(timeSince / 60));
+            Console::printlnR(F(" minutes)"));
+        }
+    } else {
+        Console::printlnR(F("Last Sync (NVRAM): Never"));
+    }
+    
     if (lastSuccessfulSync > 0) {
-        Console::printR(F("Last Successful Sync: "));
+        Console::printR(F("Last Sync (Session): "));
         Console::printR(String((millis() - lastSuccessfulSync) / 60000));
         Console::printlnR(F(" minutes ago"));
     } else {
-        Console::printlnR(F("Last Successful Sync: Never"));
+        Console::printlnR(F("Last Sync (Session): Never"));
     }
     
     if (initialSyncPending) {
         Console::printlnR(F("Initial sync pending after WiFi connection"));
     }
     
+    // Show next sync calculation
+    Console::printR(F("Sync Interval: "));
+    Console::printR(String(syncIntervalMs / 60000));
+    Console::printlnR(F(" minutes"));
+    
     Console::printR(F("Next Sync: "));
-    if (lastSuccessfulSync > 0) {
-        unsigned long timeSinceLastSync = millis() - lastSuccessfulSync;
+    if (lastSyncTimestampNVRAM > 0) {
+        DateTime rtcNow = modules->getRTCModule()->now();
+        unsigned long rtcTimestamp = rtcNow.unixtime();
+        unsigned long timeSinceLastSync = rtcTimestamp - lastSyncTimestampNVRAM;
+        unsigned long syncIntervalSec = syncIntervalMs / 1000;
+        
         // Proper overflow-safe calculation
-        if (timeSinceLastSync >= syncIntervalMs) {
-            Console::printlnR(F("Due now"));
+        if (timeSinceLastSync >= syncIntervalSec) {
+            Console::printlnR(F("Due now (overdue)"));
         } else {
-            unsigned long nextSync = syncIntervalMs - timeSinceLastSync;
-            Console::printR(String(nextSync / 60000));
-            Console::printlnR(F(" minutes"));
+            unsigned long nextSync = syncIntervalSec - timeSinceLastSync;
+            Console::printR(String(nextSync / 3600));
+            Console::printR(F(" hours ("));
+            Console::printR(String(nextSync / 60));
+            Console::printlnR(F(" minutes)"));
         }
     } else {
-        Console::printlnR(F("Waiting for WiFi connection"));
+        Console::printlnR(F("Waiting for first sync"));
     }
+    
+    // Show RTC status
+    Console::printR(F("RTC Valid: "));
+    Console::printlnR(isRTCValid() ? F("Yes") : F("No"));
+    
+    Console::printR(F("RTC Outdated: "));
+    Console::printlnR(isRTCOutdated() ? F("Yes (< 2020)") : F("No"));
+    
+    Console::printR(F("Sync Required: "));
+    Console::printlnR(shouldSyncNTP() ? F("Yes") : F("No"));
     
     Console::printlnR(F("=================================="));
 }
@@ -1064,4 +1161,121 @@ bool NTPSync::setTimeFromUnixTimestamp(unsigned long timestamp, bool applyOffset
     modules->getRTCModule()->adjust(dt);
     Console::printlnR(F("✓ RTC updated from HTTP timestamp"));
     return true;
+}
+
+/**
+ * Save last sync timestamp to NVRAM
+ */
+void NTPSync::saveLastSyncToNVRAM(unsigned long timestamp) {
+    if (preferences.putULong(NTP_LAST_SYNC_NVRAM_KEY, timestamp)) {
+        lastSyncTimestampNVRAM = timestamp;
+        DateTime dt(timestamp);
+        Console::printR(F("✓ Last sync saved to NVRAM: "));
+        Console::printlnR(formatDateTime(dt));
+    } else {
+        Console::printlnR(F("⚠ Failed to save last sync to NVRAM"));
+    }
+}
+
+/**
+ * Load last sync timestamp from NVRAM
+ */
+unsigned long NTPSync::loadLastSyncFromNVRAM() {
+    unsigned long timestamp = preferences.getULong(NTP_LAST_SYNC_NVRAM_KEY, 0);
+    return timestamp;
+}
+
+/**
+ * Check if NTP sync should be performed
+ * Returns true if sync is needed based on:
+ * 1. RTC is invalid/undefined
+ * 2. RTC time difference from last saved sync >= NTP_SYNC_INTERVAL
+ */
+bool NTPSync::shouldSyncNTP() {
+    // Check if RTC is valid
+    if (!isRTCValid()) {
+        Console::printlnR(F("Sync needed: RTC time is invalid/undefined"));
+        return true;
+    }
+    
+    // Check if RTC is clearly outdated (year < 2020)
+    if (isRTCOutdated()) {
+        Console::printlnR(F("Sync needed: RTC time is outdated"));
+        return true;
+    }
+    
+    // Check if never synced before
+    if (lastSyncTimestampNVRAM == 0) {
+        Console::printlnR(F("Sync needed: No previous sync record"));
+        return true;
+    }
+    
+    // Check time difference from last sync
+    DateTime rtcNow = modules->getRTCModule()->now();
+    unsigned long rtcTimestamp = rtcNow.unixtime();
+    
+    // Calculate difference (handle overflow safely)
+    unsigned long timeDiff;
+    if (rtcTimestamp >= lastSyncTimestampNVRAM) {
+        timeDiff = rtcTimestamp - lastSyncTimestampNVRAM;
+    } else {
+        // RTC went backwards - definitely need sync
+        Console::printlnR(F("Sync needed: RTC time went backwards"));
+        return true;
+    }
+    
+    // Convert sync interval from milliseconds to seconds
+    unsigned long syncIntervalSec = syncIntervalMs / 1000;
+    
+    if (timeDiff >= syncIntervalSec) {
+        Console::printR(F("Sync needed: "));
+        Console::printR(String(timeDiff / 3600));
+        Console::printR(F(" hours since last sync (limit: "));
+        Console::printR(String(syncIntervalSec / 3600));
+        Console::printlnR(F(" hours)"));
+        return true;
+    }
+    
+    // Sync not needed
+    Console::printR(F("Sync not needed: "));
+    Console::printR(String(timeDiff / 3600));
+    Console::printR(F(" hours since last sync (limit: "));
+    Console::printR(String(syncIntervalSec / 3600));
+    Console::printlnR(F(" hours)"));
+    return false;
+}
+
+/**
+ * Check if RTC time is valid
+ * Returns false if RTC is not initialized or time is zero
+ */
+bool NTPSync::isRTCValid() {
+    DateTime rtcNow = modules->getRTCModule()->now();
+    
+    // Check if RTC is returning zero/undefined time
+    if (rtcNow.year() == 0 || rtcNow.month() == 0 || rtcNow.day() == 0) {
+        return false;
+    }
+    
+    // Check if RTC timestamp is suspiciously low (before year 2000)
+    if (rtcNow.unixtime() < 946684800) { // 2000-01-01 00:00:00 UTC
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Check if RTC time is clearly outdated
+ * Returns true if RTC year is before 2020
+ */
+bool NTPSync::isRTCOutdated() {
+    DateTime rtcNow = modules->getRTCModule()->now();
+    
+    // Consider RTC outdated if year < 2020
+    if (rtcNow.year() < 2020) {
+        return true;
+    }
+    
+    return false;
 }
