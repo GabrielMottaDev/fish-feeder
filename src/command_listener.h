@@ -2,15 +2,10 @@
 #define COMMAND_LISTENER_H
 
 #include <Arduino.h>
-#include "rtc_module.h"
-#include "stepper_motor.h"
-#include "feeding_controller.h"
-#include "feeding_schedule.h"
-#include "wifi_controller.h"
-#include "ntp_sync.h"
-#include "vibration_motor.h"
-#include "rgb_led.h"
 #include "config.h"
+
+// Forward declarations
+class ModuleManager;
 
 /**
  * CommandListener Class
@@ -18,18 +13,14 @@
  * Manages all command processing and serial command interpretation.
  * This class centralizes all command logic, help display, and
  * command execution for the Fish Feeder system.
+ * 
+ * Architecture:
+ * - Uses ModuleManager for accessing all system modules
+ * - Simplifies constructor and reduces coupling
  */
 class CommandListener {
 private:
-    RTCModule* rtcModule;
-    StepperMotor* stepperMotor;
-    FeedingController* feedingController;
-    FeedingSchedule* feedingSchedule;
-    WiFiController* wifiController;
-    NTPSync* ntpSync;
-    VibrationMotor* vibrationMotor;
-    RGBLed* rgbLed;
-    bool* feedingInProgress;
+    ModuleManager* modules;
     
     // Command processing methods
     bool processSystemCommands(const String& command);
@@ -41,13 +32,11 @@ private:
     bool processScheduleCommands(const String& command);
     bool processVibrationCommands(const String& command);
     bool processRGBCommands(const String& command);
+    bool processTouchCommands(const String& command);
     
 public:
     // Constructor
-    CommandListener(RTCModule* rtc, StepperMotor* motor, 
-                   FeedingController* feeder, FeedingSchedule* schedule,
-                   WiFiController* wifi, NTPSync* ntp, 
-                   VibrationMotor* vibration, RGBLed* rgb, bool* feedingState);
+    CommandListener(ModuleManager* moduleManager);
     
     // Main command processing
     bool processCommand(const String& command);

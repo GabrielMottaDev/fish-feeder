@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <TaskScheduler.h>
+#include "module_manager.h"
 #include "rtc_module.h"
 #include "stepper_motor.h"
 #include "feeding_controller.h"
@@ -9,9 +10,21 @@
 #include "ntp_sync.h"
 #include "vibration_motor.h"
 #include "rgb_led.h"
+#include "touch_sensor.h"
 #include "config.h"
 #include "console_manager.h"
 #include "command_listener.h"
+
+// ============================================================================
+// MODULE MANAGER - CENTRALIZED MODULE REFERENCE MANAGEMENT
+// ============================================================================
+
+// Create ModuleManager instance for centralized module access
+ModuleManager moduleManager;
+
+// ============================================================================
+// HARDWARE MODULE INSTANCES
+// ============================================================================
 
 // Create RTC module instance
 RTCModule rtcModule;
@@ -30,6 +43,14 @@ VibrationMotor vibrationMotor(VIBRATION_MOTOR_PIN, VIBRATION_PWM_CHANNEL,
 RGBLed rgbLed(RGB_LED_RED_PIN, RGB_LED_GREEN_PIN, RGB_LED_BLUE_PIN, 
               RGB_LED_TYPE == 0 ? RGBLed::COMMON_CATHODE : RGBLed::COMMON_ANODE);
 
+// Create touch sensor instance
+// GPIO 33 - Input only pin, ideal for sensors
+TouchSensor touchSensor(TOUCH_SENSOR_PIN, TOUCH_SENSOR_ACTIVE_LOW);
+
+// ============================================================================
+// CONTROLLER MODULE INSTANCES
+// ============================================================================
+
 // Create feeding controller
 FeedingController feedingController(&feedMotor);
 
@@ -40,15 +61,10 @@ FeedingSchedule feedingSchedule;
 WiFiController wifiController;
 
 // Create NTP synchronization module
-NTPSync ntpSync(&rtcModule, &wifiController);
+NTPSync ntpSync(&moduleManager);
 
-// Global feeding state
-bool isFeedingInProgress = false;
-
-// Create command listener
-CommandListener commandListener(&rtcModule, &feedMotor, &feedingController, 
-                                &feedingSchedule, &wifiController, &ntpSync, 
-                                &vibrationMotor, &rgbLed, &isFeedingInProgress);
+// Create command listener with ModuleManager
+CommandListener commandListener(&moduleManager);
 
 // ============================================================================
 // TASK SCHEDULER SETUP
@@ -63,6 +79,7 @@ void processSerialTask();
 void motorMaintenanceTask();
 void vibrationMaintenanceTask();
 void rgbLedMaintenanceTask();
+void touchSensorMaintenanceTask();
 void feedingMonitorTask();
 void scheduleMonitorTask();
 void wifiMonitorTask();
@@ -75,6 +92,7 @@ Task tProcessSerial(SERIAL_PROCESS_INTERVAL, TASK_FOREVER, &processSerialTask, &
 Task tMotorMaintenance(MOTOR_MAINTENANCE_INTERVAL, TASK_FOREVER, &motorMaintenanceTask, &taskScheduler, true);
 Task tVibrationMaintenance(VIBRATION_MAINTENANCE_INTERVAL, TASK_FOREVER, &vibrationMaintenanceTask, &taskScheduler, true);
 Task tRGBLedMaintenance(RGB_LED_MAINTENANCE_INTERVAL, TASK_FOREVER, &rgbLedMaintenanceTask, &taskScheduler, true);
+Task tTouchSensorMaintenance(TOUCH_SENSOR_MAINTENANCE_INTERVAL, TASK_FOREVER, &touchSensorMaintenanceTask, &taskScheduler, true);
 Task tFeedingMonitor(100, TASK_FOREVER, &feedingMonitorTask, &taskScheduler, false); // Start disabled
 Task tScheduleMonitor(FEEDING_SCHEDULE_MONITOR_INTERVAL, TASK_FOREVER, &scheduleMonitorTask, &taskScheduler, true);
 Task tWiFiMonitor(WIFI_CONNECTION_CHECK_INTERVAL, TASK_FOREVER, &wifiMonitorTask, &taskScheduler, true);
@@ -131,6 +149,14 @@ void rgbLedMaintenanceTask() {
 }
 
 /**
+ * Task: Touch sensor maintenance
+ * Runs every 20ms to handle touch detection, debouncing, and callbacks
+ */
+void touchSensorMaintenanceTask() {
+    touchSensor.update();
+}
+
+/**
  * Task: Monitor feeding operations
  * Runs every 100ms to check if async feeding is complete
  */
@@ -138,16 +164,16 @@ void feedingMonitorTask() {
     // 🚨 STATUS: FEEDING - Green 60% blinking 250ms
     static bool wasFeeding = false;
     
-    if (isFeedingInProgress && !feedMotor.isRunning()) {
+    if (moduleManager.getFeedingInProgress() && !feedMotor.isRunning()) {
         // Feeding completed - this is a response to a previous FEED command
         Console::printlnR(F("Food dispensing completed successfully"));
-        isFeedingInProgress = false;
+        moduleManager.setFeedingInProgress(false);
         tFeedingMonitor.disable(); // Stop monitoring until next feeding
         
         // Return to ready status
         rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
         wasFeeding = false;
-    } else if (isFeedingInProgress && !wasFeeding) {
+    } else if (moduleManager.getFeedingInProgress() && !wasFeeding) {
         // Feeding just started
         rgbLed.setDeviceStatus(RGBLed::STATUS_FEEDING);
         wasFeeding = true;
@@ -303,13 +329,64 @@ void showTaskStatus() {
     
     Console::printlnR(F(""));
     Console::printR(F("Feeding in Progress: "));
-    Console::printlnR(isFeedingInProgress ? F("Yes") : F("No"));
+    Console::printlnR(moduleManager.getFeedingInProgress() ? F("Yes") : F("No"));
     
     Console::printR(F("Logging Enabled: "));
     Console::printlnR(ConsoleManager::isLoggingEnabled ? F("Yes") : F("No"));
     
     Console::printlnR(F("============================"));
 }
+
+// ============================================================================
+// TOUCH SENSOR CALLBACK
+// ============================================================================
+
+/**
+ * Touch sensor event callback
+ * 
+ * Controls vibration motor based on touch events:
+ * - TOUCH_PRESSED: Start gentle vibration (25% intensity)
+ * - TOUCH_RELEASED: Stop vibration
+ * - TOUCH_LONG_PRESS: Brief pulse to indicate long press detected
+ */
+void onTouchEvent(TouchSensor::TouchEvent event, unsigned long duration) {
+    switch (event) {
+        case TouchSensor::TOUCH_PRESSED:
+            // Start gentle vibration when touch begins
+            vibrationMotor.startContinuous(25);  // 25% intensity - very gentle
+            Console::println(F("Touch pressed - Vibration started (25%)"));
+            break;
+            
+        case TouchSensor::TOUCH_RELEASED:
+            // Stop vibration when touch is released
+            vibrationMotor.stop();
+            Console::print(F("Touch released (duration: "));
+            Console::print(String(duration));
+            Console::println(F("ms) - Vibration stopped"));
+            break;
+            
+        case TouchSensor::TOUCH_LONG_PRESS:
+            // Brief pulse to indicate long press detected
+            Console::print(F("Long press detected ("));
+            Console::print(String(duration));
+            Console::println(F("ms) - Pulse feedback"));
+            
+            // Brief stronger pulse for feedback (100ms at 50%)
+            vibrationMotor.stop();  // Stop current vibration
+            vibrationMotor.startTimed(50, 100);  // 50% for 100ms
+            delay(100);  // Wait for pulse to complete
+            
+            // Resume gentle vibration if still touched
+            if (touchSensor.isTouched()) {
+                vibrationMotor.startContinuous(25);  // Resume gentle vibration
+            }
+            break;
+    }
+}
+
+// ============================================================================
+// SETUP FUNCTION
+// ============================================================================
 
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
@@ -322,6 +399,27 @@ void setup() {
   
   Console::printlnR(F("=== Fish Feeder System Starting ==="));
   Console::printlnR(F("ESP32 - TaskScheduler-based Non-blocking Architecture"));
+  Console::printlnR(F("Using ModuleManager for centralized module management"));
+  
+  // ========================================================================
+  // CRITICAL: REGISTER ALL MODULES WITH MODULE MANAGER FIRST
+  // ========================================================================
+  Console::printlnR(F(""));
+  Console::printlnR(F("=== Registering Modules with ModuleManager ==="));
+  
+  moduleManager.registerRTCModule(&rtcModule);
+  moduleManager.registerStepperMotor(&feedMotor);
+  moduleManager.registerFeedingController(&feedingController);
+  moduleManager.registerFeedingSchedule(&feedingSchedule);
+  moduleManager.registerWiFiController(&wifiController);
+  moduleManager.registerNTPSync(&ntpSync);
+  moduleManager.registerVibrationMotor(&vibrationMotor);
+  moduleManager.registerRGBLed(&rgbLed);
+  moduleManager.registerTouchSensor(&touchSensor);
+  
+  Console::printlnR(F("✓ All modules registered with ModuleManager"));
+  Console::printlnR(F("==========================================="));
+  Console::printlnR(F(""));
   
   // 🚨 CRITICAL: Initialize RGB LED FIRST for status indication
   if (rgbLed.begin()) {
@@ -330,6 +428,20 @@ void setup() {
     rgbLed.setDeviceStatus(RGBLed::STATUS_BOOTING);
   } else {
     Console::printlnR(F("ERROR: Failed to initialize RGB LED"));
+  }
+  
+  // Initialize touch sensor
+  if (touchSensor.begin(false)) {  // false = no internal pull-up
+    Console::printR(F("Touch sensor: Initialized on pin "));
+    Console::println(String(TOUCH_SENSOR_PIN));
+    touchSensor.setDebounceDelay(TOUCH_SENSOR_DEBOUNCE_DELAY);
+    touchSensor.setLongPressDuration(TOUCH_SENSOR_LONG_PRESS_DURATION);
+    
+    // Register callback for touch events (vibration feedback)
+    touchSensor.setCallback(onTouchEvent);
+    Console::printlnR(F("Touch sensor callback registered (vibration feedback)"));
+  } else {
+    Console::printlnR(F("ERROR: Failed to initialize touch sensor"));
   }
   
   // Initialize RTC module
@@ -386,6 +498,9 @@ void setup() {
     Console::printlnR(F("- 100nF capacitor across motor"));
   } else {
     Console::printlnR(F("Vibration Motor: Initialized on GPIO 26"));
+    // Ensure motor is completely off after initialization
+    vibrationMotor.stop();
+    Console::printlnR(F("Vibration Motor: Confirmed OFF state"));
   }
   
   // Keep LED blinking during boot
@@ -419,9 +534,8 @@ void setup() {
     delay(100);  // Update LED while waiting
   }
   
-  // Configure WiFi Controller with FeedingSchedule reference for web interface
-  wifiController.setFeedingSchedule(&feedingSchedule);
-  wifiController.setFeedingController(&feedingController);
+  // Configure WiFi Controller with ModuleManager reference for web interface
+  wifiController.setModuleManager(&moduleManager);
   
   // Keep LED blinking
   for (int i = 0; i < 10; i++) {
@@ -442,10 +556,13 @@ void setup() {
   }
   
   // Initialize Feeding Schedule System
-  feedingSchedule.begin(&feedingController, &rtcModule);
+  feedingSchedule.begin(&moduleManager);
   // Note: Schedules are now loaded automatically from NVRAM in begin()
   // DEFAULT_FEEDING_SCHEDULE is only used on first boot or NVRAM reset
   Console::printlnR(F("Feeding Schedule: System initialized with persistent schedules"));
+  
+  // Configure WiFi Controller with ModuleManager reference for web interface
+  wifiController.setModuleManager(&moduleManager);
   
   // CRITICAL: Register ALL endpoints now that components are ready
   Console::printlnR("=== FINAL ENDPOINT REGISTRATION ===");

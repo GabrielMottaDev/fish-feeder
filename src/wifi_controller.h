@@ -8,6 +8,7 @@
 #include "config.h"
 
 // Forward declarations
+class ModuleManager;
 class FeedingSchedule;
 class FeedingController;
 
@@ -22,6 +23,10 @@ class FeedingController;
  * - Saved network credentials storage using Preferences
  * - Custom parameters integration
  * - Network status monitoring and diagnostics
+ * 
+ * Architecture:
+ * - Uses ModuleManager for accessing other system modules
+ * - Reduces coupling between modules
  */
 class WiFiController {
 private:
@@ -30,9 +35,8 @@ private:
     bool wifiEnabled;
     bool configPortalActive;
     
-    // References to other system components
-    FeedingSchedule* feedingSchedule;
-    FeedingController* feedingController;
+    // Reference to ModuleManager
+    ModuleManager* modules;
     
     // WiFi connection state
     String currentSSID;
@@ -84,8 +88,7 @@ public:
     
     // Initialization
     bool begin();
-    void setFeedingSchedule(FeedingSchedule* schedule);
-    void setFeedingController(FeedingController* controller);
+    void setModuleManager(ModuleManager* moduleManager);
     void registerAllEndpoints(); // Register ALL endpoints after components are ready
     
     // WiFi Management

@@ -64,8 +64,8 @@ const float DEFAULT_ACCELERATION = 800.0f;
 const uint8_t VIBRATION_MOTOR_PIN = 26;
 
 // PWM channel for vibration motor (ESP32 has 16 LEDC channels: 0-15)
-// Using channel 1 (channel 0 may be used by other peripherals)
-const uint8_t VIBRATION_PWM_CHANNEL = 1;
+// Using channel 5 to avoid conflict with RGB LED (channels 0, 1, 2)
+const uint8_t VIBRATION_PWM_CHANNEL = 5;
 
 // PWM frequency: 1000Hz (1kHz) - good balance for motor control
 // VIBRACALL MOTOR 1027 PWM FREQUENCY CONSIDERATIONS:
@@ -109,6 +109,47 @@ const uint8_t RGB_LED_TYPE = 0;  // 0 = COMMON_CATHODE
 // This task handles timed operations, fading, and blinking effects
 // 20ms provides smooth visual updates (50Hz refresh rate)
 const unsigned long RGB_LED_MAINTENANCE_INTERVAL = 20;
+
+// ============================================================================
+// TOUCH SENSOR CONFIGURATION VALUES (TTP223)
+// ============================================================================
+
+// Touch sensor pin assignment: GPIO 33 (input-only pin, suitable for sensors)
+// ESP32-WROOM-32 GPIO 33 SPECIFICATIONS:
+//   • Input-only pin (no output capability)
+//   • Internal pull-up/pull-down available
+//   • ADC1_CH5, RTC_GPIO8, TOUCH8
+//   • Ideal for sensor inputs and touch detection
+//   • Not connected to internal flash, safe for any use
+const uint8_t TOUCH_SENSOR_PIN = 33;
+
+// Touch sensor active logic: false = active HIGH (standard TTP223 behavior)
+// TTP223 MODULE OUTPUT BEHAVIOR:
+//   • Standard mode: OUTPUT = HIGH when touched, LOW when not touched
+//   • Inverted mode: OUTPUT = LOW when touched, HIGH when not touched (rare)
+//   • Most TTP223 modules use standard mode (active HIGH)
+const bool TOUCH_SENSOR_ACTIVE_LOW = false;
+
+// Touch sensor debounce delay: 50ms (prevents false triggers)
+// DEBOUNCE DELAY CONSIDERATIONS:
+//   • Too short (< 20ms): May cause false triggers from electrical noise
+//   • Optimal (40-60ms): Good balance between responsiveness and stability
+//   • Too long (> 100ms): Feels sluggish to user interaction
+//   • Recommended: 50ms for responsive yet stable touch detection
+const unsigned long TOUCH_SENSOR_DEBOUNCE_DELAY = 50;
+
+// Touch sensor long press duration: 1000ms (1 second)
+// LONG PRESS DURATION CONSIDERATIONS:
+//   • Short (500-800ms): Quick access to long press features
+//   • Standard (1000-1500ms): Clear distinction from normal touch
+//   • Long (2000ms+): Prevents accidental long press activation
+//   • Recommended: 1000ms for intuitive user experience
+const unsigned long TOUCH_SENSOR_LONG_PRESS_DURATION = 1000;
+
+// Touch sensor maintenance task interval: 20ms
+// This task calls update() to handle debouncing and callbacks
+// 20ms provides 50Hz update rate for responsive touch detection
+const unsigned long TOUCH_SENSOR_MAINTENANCE_INTERVAL = 20;
 
 // ============================================================================
 // SERIAL COMMUNICATION CONFIGURATION VALUES
