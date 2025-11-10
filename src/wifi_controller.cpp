@@ -1333,7 +1333,7 @@ String WiFiController::generateScheduleManagementPage() {
     html += "<select id='portionSelect' class='form-control' style='width: 120px;'>";
     for (int i = 1; i <= 20; i++) {
         html += "<option value='" + String(i) + "'";
-        if (i == 2) html += " selected"; // Default to 2 portions
+        if (i == 1) html += " selected"; // Default to 1 portions
         html += ">" + String(i) + "</option>";
     }
     html += "</select>";
