@@ -6,6 +6,14 @@
 #include "config.h"
 #include <RTClib.h>
 
+// External functions from main.cpp for centralized feeding operations
+extern bool startFeeding(uint8_t portions, bool recordInSchedule);
+extern bool cancelFeeding();
+extern uint8_t getTouchLongPressPortions();
+void setTouchLongPressPortions(uint8_t portions);
+extern bool getTouchSensorEnabled();
+extern void setTouchSensorEnabled(bool enabled);
+
 /**
  * Constructor: Initialize WiFi Controller
  */
@@ -109,8 +117,12 @@ void WiFiController::registerAllEndpoints() {
     
     wifiManager.server->on("/api/feed-test", HTTP_GET, [this]() {
         if (modules && modules->getFeedingController() && modules->getFeedingController()->isReady()) {
-            modules->getFeedingController()->dispenseFoodAsync(2);
-            wifiManager.server->send(200, "application/json", "{\"success\":true,\"message\":\"Test feeding started (2 portions)\"}");
+            // Use centralized feeding method
+            if (startFeeding(2, true)) {
+                wifiManager.server->send(200, "application/json", "{\"success\":true,\"message\":\"Test feeding started (2 portions)\"}");
+            } else {
+                wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Failed to start test feeding\"}");
+            }
         } else {
             wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Feeding controller not ready\"}");
         }
@@ -175,7 +187,60 @@ void WiFiController::registerAllEndpoints() {
     });
     Console::printlnR("✓ Registered: /api/motor-direction/set (GET)");
     
-    // 5. Schedule API endpoints (the critical ones)
+    // 5. Touch sensor long press portions endpoints
+    wifiManager.server->on("/api/touch-portions", HTTP_GET, [this]() {
+        uint8_t portions = getTouchLongPressPortions();
+        String json = "{\"success\":true,\"portions\":" + String(portions) + ",\"min\":" + String(MIN_FOOD_PORTIONS) + ",\"max\":" + String(MAX_FOOD_PORTIONS) + "}";
+        wifiManager.server->send(200, "application/json", json);
+    });
+    Console::printlnR("✓ Registered: /api/touch-portions (GET)");
+    
+    wifiManager.server->on("/api/touch-portions/set", HTTP_GET, [this]() {
+        if (!wifiManager.server->hasArg("portions")) {
+            wifiManager.server->send(400, "application/json", "{\"success\":false,\"message\":\"Missing 'portions' parameter. Use: /api/touch-portions/set?portions=X\"}");
+            return;
+        }
+        
+        String portionsStr = wifiManager.server->arg("portions");
+        uint8_t portions = portionsStr.toInt();
+        
+        if (portions < MIN_FOOD_PORTIONS || portions > MAX_FOOD_PORTIONS) {
+            String json = "{\"success\":false,\"message\":\"Invalid portions. Must be between " + String(MIN_FOOD_PORTIONS) + " and " + String(MAX_FOOD_PORTIONS) + "\"}";
+            wifiManager.server->send(400, "application/json", json);
+            return;
+        }
+        
+        setTouchLongPressPortions(portions);
+        String json = "{\"success\":true,\"portions\":" + String(portions) + ",\"message\":\"Touch long press portions updated\"}";
+        wifiManager.server->send(200, "application/json", json);
+    });
+    Console::printlnR("✓ Registered: /api/touch-portions/set (GET)");
+    
+    // 6. Touch sensor enabled/disabled endpoints
+    wifiManager.server->on("/api/touch-enabled", HTTP_GET, [this]() {
+        bool enabled = getTouchSensorEnabled();
+        String json = "{\"success\":true,\"enabled\":" + String(enabled ? "true" : "false") + "}";
+        wifiManager.server->send(200, "application/json", json);
+    });
+    Console::printlnR("✓ Registered: /api/touch-enabled (GET)");
+    
+    wifiManager.server->on("/api/touch-enabled/set", HTTP_GET, [this]() {
+        if (!wifiManager.server->hasArg("enabled")) {
+            wifiManager.server->send(400, "application/json", "{\"success\":false,\"message\":\"Missing 'enabled' parameter. Use: /api/touch-enabled/set?enabled=true or false\"}");
+            return;
+        }
+        
+        String enabledStr = wifiManager.server->arg("enabled");
+        bool enabled = (enabledStr == "true" || enabledStr == "1");
+        
+        setTouchSensorEnabled(enabled);
+        
+        String json = "{\"success\":true,\"enabled\":" + String(enabled ? "true" : "false") + ",\"message\":\"Touch sensor " + String(enabled ? "enabled" : "disabled") + "\"}";
+        wifiManager.server->send(200, "application/json", json);
+    });
+    Console::printlnR("✓ Registered: /api/touch-enabled/set (GET)");
+    
+    // 7. Schedule API endpoints (the critical ones)
     Console::printlnR("=== REGISTERING SCHEDULE API ENDPOINTS ===");
     setupScheduleAPIEndpoints();
     
@@ -1308,6 +1373,14 @@ String WiFiController::generateScheduleManagementPage() {
     html += ".back-link { display: inline-block; margin-top: 30px; padding: 15px 30px; background: #95a5a6; color: white; border-radius: 8px; text-decoration: none; font-weight: 600; }";
     html += ".back-link:hover { background: #7f8c8d; }";
     
+    // Toggle switch CSS
+    html += ".switch { position: relative; display: inline-block; width: 50px; height: 24px; }";
+    html += ".switch input { opacity: 0; width: 0; height: 0; }";
+    html += ".slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 24px; }";
+    html += ".slider:before { position: absolute; content: ''; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }";
+    html += "input:checked + .slider { background-color: #27ae60; }";
+    html += "input:checked + .slider:before { transform: translateX(26px); }";
+    
     // Responsive design
     html += "@media (max-width: 768px) {";
     html += ".status-grid { grid-template-columns: 1fr; }";
@@ -1411,24 +1484,44 @@ String WiFiController::generateScheduleManagementPage() {
     // System Configuration
     html += "<div class='section'>";
     html += "<h2>&#9881; System Configuration</h2>";
-    html += "<div class='form-row'>";
+    html += "<div style='display: flex; flex-direction: column; gap: 20px;'>";
     html += "<div class='form-group'>";
     html += "<label for='tolerance'>Missed Feeding Tolerance (minutes)</label>";
-    html += "<input type='number' id='tolerance' class='form-control' min='1' max='120' value='30'>";
+    html += "<div style='display: flex; gap: 10px; align-items: center;'>";
+    html += "<input type='number' id='tolerance' class='form-control' min='1' max='120' value='30' style='width: 150px;'>";
     html += "<button class='btn btn-primary btn-small' onclick='setTolerance()'>Update</button>";
+    html += "</div>";
     html += "</div>";
     html += "<div class='form-group'>";
     html += "<label for='recovery'>Recovery Period (hours)</label>";
-    html += "<input type='number' id='recovery' class='form-control' min='1' max='72' value='12'>";
+    html += "<div style='display: flex; gap: 10px; align-items: center;'>";
+    html += "<input type='number' id='recovery' class='form-control' min='1' max='72' value='12' style='width: 150px;'>";
     html += "<button class='btn btn-primary btn-small' onclick='setRecovery()'>Update</button>";
+    html += "</div>";
     html += "</div>";
     html += "<div class='form-group'>";
     html += "<label>Motor Rotation Direction</label>";
-    html += "<div style='display: flex; gap: 10px; margin-top: 8px;'>";
-    html += "<button id='btnCW' class='btn btn-primary btn-small' onclick='setMotorDirection(\"CW\")'>&#8635; Clockwise</button>";
-    html += "<button id='btnCCW' class='btn btn-primary btn-small' onclick='setMotorDirection(\"CCW\")'>&#8634; Counter-clockwise</button>";
+    html += "<button id='btnMotorDirection' class='btn btn-primary btn-small' onclick='toggleMotorDirection()' style='margin-top: 8px; min-width: 200px;'>Loading...</button>";
     html += "</div>";
-    html += "<div id='motorDirectionStatus' style='margin-top: 8px; font-size: 0.9em; color: #7f8c8d;'>Loading...</div>";
+    html += "<div class='form-group'>";
+    html += "<label for='touchPortions'>Touch Sensor Long Press Portions</label>";
+    html += "<select id='touchPortions' class='form-control' onchange='setTouchPortions()' style='width: 200px;'>";
+    for (int i = 1; i <= 10; i++) {
+        html += "<option value='" + String(i) + "'>" + String(i) + " portion" + String(i > 1 ? "s" : "") + "</option>";
+    }
+    html += "</select>";
+    html += "<div id='touchPortionsStatus' style='margin-top: 8px; font-size: 0.9em; color: #7f8c8d;'>Current: 2 portions</div>";
+    html += "</div>";
+    html += "<div class='form-group'>";
+    html += "<label for='touchEnabled'>Touch Sensor Functionality</label>";
+    html += "<div style='display: flex; align-items: center; gap: 12px;'>";
+    html += "<label class='switch'>";
+    html += "<input type='checkbox' id='touchEnabled' onchange='setTouchEnabled()'>";
+    html += "<span class='slider'></span>";
+    html += "</label>";
+    html += "<span id='touchEnabledLabel' style='font-weight: 500;'>Loading...</span>";
+    html += "</div>";
+    html += "<div style='margin-top: 8px; font-size: 0.85em; color: #7f8c8d;'>When disabled: No feeding/vibration on touch, LED status continues</div>";
     html += "</div>";
     html += "</div>";
     html += "</div>";
@@ -1631,9 +1724,10 @@ String WiFiController::generateScheduleManagementPage() {
     html += "  console.log('Starting feeding with', portions, 'portions');";
     html += "  apiGet('/api/feed?portions=' + portions + '&t=' + Date.now(), function(result) {";
     html += "    if(result && result.success) {";
-    html += "      alert('✓ Feeding started: ' + portions + ' portions');";
+    html += "      console.log('✓ Feeding started:', portions, 'portions');";
     html += "      loadStatus();";
     html += "    } else {";
+    html += "      console.error('✗ Feeding error:', result ? (result.message || result.error || 'Unknown') : 'No response');";
     html += "      alert('✗ Feeding error: ' + (result ? (result.message || result.error || 'Unknown') : 'No response'));";
     html += "    }";
     html += "  });";
@@ -1675,51 +1769,85 @@ String WiFiController::generateScheduleManagementPage() {
     html += "  loadSchedules();";
     html += "  loadStatus();";
     html += "  loadMotorDirection();";
+    html += "  loadTouchPortions();";
     html += "}";
     
     // Load motor direction
     html += "function loadMotorDirection() {";
     html += "  apiGet('/api/motor-direction?t=' + Date.now(), function(result) {";
     html += "    if(result && result.success) {";
-    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
-    html += "      if(statusEl) {";
-    html += "        statusEl.textContent = 'Current: ' + result.description + ' (' + result.direction + ')';";
-    html += "        statusEl.style.color = '#27ae60';";
-    html += "      }";
-    html += "      const btnCW = document.getElementById('btnCW');";
-    html += "      const btnCCW = document.getElementById('btnCCW');";
-    html += "      if(result.direction === 'CW') {";
-    html += "        if(btnCW) btnCW.style.background = '#27ae60';";
-    html += "        if(btnCCW) btnCCW.style.background = '#3498db';";
-    html += "      } else {";
-    html += "        if(btnCW) btnCW.style.background = '#3498db';";
-    html += "        if(btnCCW) btnCCW.style.background = '#27ae60';";
+    html += "      const btn = document.getElementById('btnMotorDirection');";
+    html += "      if(btn) {";
+    html += "        if(result.direction === 'CW') {";
+    html += "          btn.textContent = '\\u21BB Clockwise';";
+    html += "          btn.style.background = '#3498db';";
+    html += "          btn.dataset.current = 'CW';";
+    html += "        } else {";
+    html += "          btn.textContent = '\\u21BA Counter-clockwise';";
+    html += "          btn.style.background = '#27ae60';";
+    html += "          btn.dataset.current = 'CCW';";
+    html += "        }";
     html += "      }";
     html += "    } else {";
-    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
-    html += "      if(statusEl) {";
-    html += "        statusEl.textContent = 'Error loading direction';";
-    html += "        statusEl.style.color = '#e74c3c';";
+    html += "      const btn = document.getElementById('btnMotorDirection');";
+    html += "      if(btn) {";
+    html += "        btn.textContent = 'Error loading';";
+    html += "        btn.style.background = '#e74c3c';";
     html += "      }";
     html += "    }";
     html += "  });";
     html += "}";
     
-    // Set motor direction
-    html += "function setMotorDirection(direction) {";
-    html += "  console.log('Setting motor direction to:', direction);";
-    html += "  apiGet('/api/motor-direction/set?direction=' + direction + '&t=' + Date.now(), function(result) {";
+    // Toggle motor direction
+    html += "function toggleMotorDirection() {";
+    html += "  const btn = document.getElementById('btnMotorDirection');";
+    html += "  if(!btn || !btn.dataset.current) return;";
+    html += "  const currentDirection = btn.dataset.current;";
+    html += "  const newDirection = currentDirection === 'CW' ? 'CCW' : 'CW';";
+    html += "  console.log('Toggling motor direction from', currentDirection, 'to', newDirection);";
+    html += "  apiGet('/api/motor-direction/set?direction=' + newDirection + '&t=' + Date.now(), function(result) {";
     html += "    if(result && result.success) {";
     html += "      console.log('Direction changed successfully:', result);";
     html += "      loadMotorDirection();";
-    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
-    html += "      if(statusEl) {";
-    html += "        statusEl.textContent = '✓ ' + result.message;";
-    html += "        statusEl.style.color = '#27ae60';";
-    html += "      }";
     html += "    } else {";
     html += "      console.error('Direction change failed:', result);";
-    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
+    html += "      btn.textContent = '✗ Error';";
+    html += "      btn.style.background = '#e74c3c';";
+    html += "      setTimeout(loadMotorDirection, 2000);";
+    html += "    }";
+    html += "  });";
+    html += "}";
+    
+    // Load touch portions
+    html += "function loadTouchPortions() {";
+    html += "  apiGet('/api/touch-portions?t=' + Date.now(), function(result) {";
+    html += "    if(result && result.success) {";
+    html += "      const selectEl = document.getElementById('touchPortions');";
+    html += "      const statusEl = document.getElementById('touchPortionsStatus');";
+    html += "      if(selectEl) selectEl.value = result.portions;";
+    html += "      if(statusEl) {";
+    html += "        statusEl.textContent = 'Current: ' + result.portions + ' portion' + (result.portions > 1 ? 's' : '');";
+    html += "        statusEl.style.color = '#27ae60';";
+    html += "      }";
+    html += "    }";
+    html += "  });";
+    html += "}";
+    
+    // Set touch portions
+    html += "function setTouchPortions() {";
+    html += "  const portions = document.getElementById('touchPortions').value;";
+    html += "  console.log('Setting touch portions to:', portions);";
+    html += "  apiGet('/api/touch-portions/set?portions=' + portions + '&t=' + Date.now(), function(result) {";
+    html += "    const statusEl = document.getElementById('touchPortionsStatus');";
+    html += "    if(result && result.success) {";
+    html += "      console.log('Touch portions updated:', result);";
+    html += "      if(statusEl) {";
+    html += "        statusEl.textContent = '✓ Set to ' + result.portions + ' portion' + (result.portions > 1 ? 's' : '');";
+    html += "        statusEl.style.color = '#27ae60';";
+    html += "      }";
+    html += "      loadTouchPortions();";
+    html += "    } else {";
+    html += "      console.error('Update failed:', result);";
     html += "      if(statusEl) {";
     html += "        statusEl.textContent = '✗ ' + (result ? result.message : 'Error');";
     html += "        statusEl.style.color = '#e74c3c';";
@@ -1727,6 +1855,48 @@ String WiFiController::generateScheduleManagementPage() {
     html += "    }";
     html += "  });";
     html += "}";
+    
+    // Load touch enabled state
+    html += "function loadTouchEnabled() {";
+    html += "  apiGet('/api/touch-enabled?t=' + Date.now(), function(result) {";
+    html += "    if(result && result.success) {";
+    html += "      const checkboxEl = document.getElementById('touchEnabled');";
+    html += "      const labelEl = document.getElementById('touchEnabledLabel');";
+    html += "      if(checkboxEl) checkboxEl.checked = result.enabled;";
+    html += "      if(labelEl) {";
+    html += "        labelEl.textContent = result.enabled ? 'Enabled' : 'Disabled';";
+    html += "        labelEl.style.color = result.enabled ? '#27ae60' : '#e74c3c';";
+    html += "      }";
+    html += "    }";
+    html += "  });";
+    html += "}";
+    
+    // Set touch enabled state
+    html += "function setTouchEnabled() {";
+    html += "  const enabled = document.getElementById('touchEnabled').checked;";
+    html += "  console.log('Setting touch enabled to:', enabled);";
+    html += "  apiGet('/api/touch-enabled/set?enabled=' + enabled + '&t=' + Date.now(), function(result) {";
+    html += "    const labelEl = document.getElementById('touchEnabledLabel');";
+    html += "    if(result && result.success) {";
+    html += "      console.log('Touch enabled updated:', result);";
+    html += "      if(labelEl) {";
+    html += "        labelEl.textContent = result.enabled ? 'Enabled' : 'Disabled';";
+    html += "        labelEl.style.color = result.enabled ? '#27ae60' : '#e74c3c';";
+    html += "      }";
+    html += "    } else {";
+    html += "      console.error('Update failed:', result);";
+    html += "      if(labelEl) {";
+    html += "        labelEl.textContent = 'Error';";
+    html += "        labelEl.style.color = '#e74c3c';";
+    html += "      }";
+    html += "      loadTouchEnabled();";
+    html += "    }";
+    html += "  });";
+    html += "}";
+    
+    // Placeholder functions for tolerance and recovery (not implemented yet)
+    html += "function setTolerance() { alert('Feature not yet implemented via web interface. Use serial command: SCHEDULE TOLERANCE [minutes]'); }";
+    html += "function setRecovery() { alert('Feature not yet implemented via web interface. Use serial command: SCHEDULE RECOVERY [hours]'); }";
     
     // Clock update
     html += "function updateClock() {";
@@ -1748,6 +1918,8 @@ String WiFiController::generateScheduleManagementPage() {
     html += "  loadSchedules();";
     html += "  loadStatus();";
     html += "  loadMotorDirection();";
+    html += "  loadTouchPortions();";
+    html += "  loadTouchEnabled();";
     html += "  updateClock();";
     html += "  setInterval(updateClock, 1000);";
     html += "  window.addEventListener('beforeunload', function(e) {";
@@ -1924,32 +2096,25 @@ void WiFiController::setupScheduleAPIEndpoints() {
         
         Console::printlnR("  modules->getFeedingSchedule() available: " + String(modules->getFeedingSchedule() ? "YES" : "NO"));
         
-        // Execute feeding via modules->getFeedingController()
+        // Execute feeding via centralized method
         if (modules && modules->getFeedingController() && modules->getFeedingController()->isReady()) {
             Console::printlnR("Attempting to start feeding with " + String(portions) + " portions...");
-            bool success = modules->getFeedingController()->dispenseFoodAsync(portions);
-            Console::printlnR("modules->getFeedingController()->dispenseFoodAsync() result: " + String(success ? "SUCCESS" : "FAILED"));
+            
+            // Use centralized feeding method
+            bool success = startFeeding(portions, true);
+            Console::printlnR("startFeeding() result: " + String(success ? "SUCCESS" : "FAILED"));
             
             if (success) {
-                // Update last feeding time in schedule with current time
-                if (modules && modules->getFeedingSchedule()) {
-                    Console::printlnR("Recording manual feeding in schedule...");
-                    // Use current timestamp - modules->getFeedingSchedule() will handle time conversion
-                    DateTime now = DateTime(millis() / 1000 + 946684800); // Convert millis to Unix timestamp
-                    modules->getFeedingSchedule()->recordManualFeeding(now);
-                    Console::printlnR("Manual feeding recorded successfully");
-                }
-                
                 String response = "{\"success\":true,\"message\":\"Started feeding " + String(portions) + " portions\"}";
                 wifiManager.server->send(200, "application/json", response);
                 
                 Console::printlnR("API: Manual feeding started successfully - " + String(portions) + " portions");
                 Console::printlnR("=== API FEED REQUEST COMPLETED ===");
             } else {
-                String response = "{\"success\":false,\"message\":\"Failed to start feeding - controller not ready\"}";
+                String response = "{\"success\":false,\"message\":\"Failed to start feeding - check logs\"}";
                 wifiManager.server->send(500, "application/json", response);
                 
-                Console::printlnR("API: Manual feeding failed - dispenseFoodAsync returned false");
+                Console::printlnR("API: Manual feeding failed - startFeeding returned false");
                 Console::printlnR("=== API FEED REQUEST FAILED ===");
             }
         } else {

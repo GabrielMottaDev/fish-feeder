@@ -122,6 +122,22 @@ extern const unsigned long TOUCH_SENSOR_LONG_PRESS_DURATION;
 // Touch sensor maintenance task interval (milliseconds)
 extern const unsigned long TOUCH_SENSOR_MAINTENANCE_INTERVAL;
 
+// Default number of portions to dispense on long press
+extern const uint8_t DEFAULT_TOUCH_LONG_PRESS_PORTIONS;
+
+// NVRAM key for storing touch long press portions
+extern const char* TOUCH_LONG_PRESS_PORTIONS_NVRAM_KEY;
+
+// Default touch sensor enabled state
+extern const bool DEFAULT_TOUCH_SENSOR_ENABLED;
+
+// NVRAM key for storing touch sensor enabled/disabled state
+extern const char* TOUCH_SENSOR_ENABLED_NVRAM_KEY;
+
+// Touch vibration feedback durations (milliseconds)
+extern const unsigned long TOUCH_VIBRATION_SHORT_DURATION;
+extern const unsigned long TOUCH_VIBRATION_LONG_DURATION;
+
 // ============================================================================
 // SERIAL COMMUNICATION CONFIGURATION
 // ============================================================================

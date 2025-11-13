@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <TaskScheduler.h>
+#include <Preferences.h>
 #include "module_manager.h"
 #include "rtc_module.h"
 #include "stepper_motor.h"
@@ -14,6 +15,33 @@
 #include "config.h"
 #include "console_manager.h"
 #include "command_listener.h"
+
+// ============================================================================
+// GLOBAL CONFIGURATION VARIABLES
+// ============================================================================
+
+// Touch long press portions - configurable via NVRAM
+uint8_t touchLongPressPortions = DEFAULT_TOUCH_LONG_PRESS_PORTIONS;
+
+// Touch sensor enabled/disabled state - configurable via NVRAM
+bool touchSensorEnabled = DEFAULT_TOUCH_SENSOR_ENABLED;
+
+// LED Status Control - NEW ARCHITECTURE
+// Centralized LED status management based on system state priority
+enum SystemLEDState {
+    LED_STATE_READY,          // Green solid - System ready
+    LED_STATE_FEEDING,        // Green blinking - Feeding in progress
+    LED_STATE_CANCEL_FLASH,   // Red flash - Feeding canceled
+    LED_STATE_ERROR           // Red solid - Error state
+};
+
+SystemLEDState currentLEDState = LED_STATE_READY;
+SystemLEDState desiredLEDState = LED_STATE_READY;
+unsigned long ledStateChangeTime = 0;
+const unsigned long CANCEL_FLASH_DURATION = 300;  // 300ms red flash
+
+// Preferences for NVRAM storage
+Preferences touchPreferences;
 
 // ============================================================================
 // MODULE MANAGER - CENTRALIZED MODULE REFERENCE MANAGEMENT
@@ -72,6 +100,26 @@ CommandListener commandListener(&moduleManager);
 
 // Create scheduler instance
 Scheduler taskScheduler;
+
+// ============================================================================
+// FORWARD DECLARATIONS - CENTRALIZED FEEDING FUNCTIONS
+// ============================================================================
+
+// These functions are used by multiple modules and must be declared before usage
+bool startFeeding(uint8_t portions, bool recordInSchedule = true);
+bool cancelFeeding();
+uint8_t getTouchLongPressPortions();
+void setTouchLongPressPortions(uint8_t portions);
+bool getTouchSensorEnabled();
+void setTouchSensorEnabled(bool enabled);
+
+// LED status management functions
+void updateLEDStatus();
+void applyLEDState(SystemLEDState state);
+
+// ============================================================================
+// TASK CALLBACK FORWARD DECLARATIONS
+// ============================================================================
 
 // Task callback functions
 void displayTimeTask();
@@ -141,11 +189,77 @@ void vibrationMaintenanceTask() {
 }
 
 /**
+ * Update LED based on system state
+ * This is the SINGLE SOURCE OF TRUTH for LED status
+ * Called by rgbLedMaintenanceTask() every 20ms
+ */
+void updateLEDStatus() {
+    // Determine desired state based on system status (priority order)
+    if (moduleManager.getFeedingInProgress()) {
+        desiredLEDState = LED_STATE_FEEDING;
+    } else {
+        desiredLEDState = LED_STATE_READY;
+    }
+    
+    // Handle temporary cancel flash
+    if (currentLEDState == LED_STATE_CANCEL_FLASH) {
+        if (millis() - ledStateChangeTime >= CANCEL_FLASH_DURATION) {
+            // Cancel flash expired - transition to desired state
+            currentLEDState = desiredLEDState;
+            applyLEDState(currentLEDState);
+        }
+        // Still flashing, don't change
+        return;
+    }
+    
+    // Apply desired state if different from current
+    if (desiredLEDState != currentLEDState) {
+        currentLEDState = desiredLEDState;
+        applyLEDState(currentLEDState);
+    }
+}
+
+/**
+ * Apply LED state to hardware
+ */
+void applyLEDState(SystemLEDState state) {
+    switch (state) {
+        case LED_STATE_READY:
+            rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
+            Console::println(F("LED: READY (green solid)"));
+            break;
+            
+        case LED_STATE_FEEDING:
+            rgbLed.setDeviceStatus(RGBLed::STATUS_FEEDING);
+            Console::println(F("LED: FEEDING (green blink)"));
+            break;
+            
+        case LED_STATE_CANCEL_FLASH:
+            rgbLed.stopBlink();
+            rgbLed.setColor(255, 0, 0);
+            rgbLed.turnOn();
+            ledStateChangeTime = millis();
+            Console::println(F("LED: CANCEL FLASH (red)"));
+            break;
+            
+        case LED_STATE_ERROR:
+            rgbLed.setColor(255, 0, 0);
+            rgbLed.turnOn();
+            Console::println(F("LED: ERROR (red solid)"));
+            break;
+    }
+}
+
+/**
  * Task: RGB LED maintenance
- * Runs every 20ms to handle timed operations, fading, and blinking
+ * Runs every 20ms to handle LED updates and state management
  */
 void rgbLedMaintenanceTask() {
+    // Update LED hardware (blinking, fading, etc)
     rgbLed.update();
+    
+    // Update LED status based on system state
+    updateLEDStatus();
 }
 
 /**
@@ -161,22 +275,20 @@ void touchSensorMaintenanceTask() {
  * Runs every 100ms to check if async feeding is complete
  */
 void feedingMonitorTask() {
-    // 🚨 STATUS: FEEDING - Green 60% blinking 250ms
     static bool wasFeeding = false;
     
     if (moduleManager.getFeedingInProgress() && !feedMotor.isRunning()) {
-        // Feeding completed - this is a response to a previous FEED command
+        // Feeding completed
         Console::printlnR(F("Food dispensing completed successfully"));
         moduleManager.setFeedingInProgress(false);
-        tFeedingMonitor.disable(); // Stop monitoring until next feeding
-        
-        // Return to ready status
-        rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
+        tFeedingMonitor.disable();
         wasFeeding = false;
+        // LED will automatically transition to READY via updateLEDStatus()
     } else if (moduleManager.getFeedingInProgress() && !wasFeeding) {
         // Feeding just started
-        rgbLed.setDeviceStatus(RGBLed::STATUS_FEEDING);
+        Console::println(F("Feeding in progress detected"));
         wasFeeding = true;
+        // LED will automatically show FEEDING via updateLEDStatus()
     }
 }
 
@@ -344,34 +456,52 @@ void showTaskStatus() {
 /**
  * Touch sensor event callback
  * 
- * Controls vibration motor based on touch events:
- * - TOUCH_PRESSED: Start gentle vibration (25% intensity)
+ * NEW BEHAVIOR:
+ * - TOUCH_PRESSED: Quick short vibration (50ms) for tactile feedback
  * - TOUCH_RELEASED: Stop vibration
- * - TOUCH_LONG_PRESS: Brief pulse to indicate long press detected
+ * - TOUCH_LONG_PRESS:
+ *   • If feeding in progress: Cancel feeding + Red LED for 1s + Longer vibration (200ms)
+ *   • If not feeding: Start feeding with configured portions + Longer vibration (200ms)
  */
 void onTouchEvent(TouchSensor::TouchEvent event, unsigned long duration) {
     switch (event) {
         case TouchSensor::TOUCH_PRESSED:
-            // Start stronger vibration when touch begins
-            vibrationMotor.startContinuous(60);  // 60% intensity for good tactile feedback
-            Console::println(F("Touch pressed - Vibration started"));
+            // Quick short vibration on touch (only if touch sensor is enabled)
+            if (touchSensorEnabled) {
+                vibrationMotor.startTimed(60, TOUCH_VIBRATION_SHORT_DURATION);  // 60% for 50ms
+            }
+            Console::println(F("Touch pressed"));
             break;
             
         case TouchSensor::TOUCH_RELEASED:
-            // Stop vibration when touch is released
-            vibrationMotor.stop();
+            // Touch released - no action needed (vibration auto-stops with timed)
             Console::print(F("Touch released ("));
             Console::print(String(duration));
             Console::println(F("ms)"));
             break;
             
         case TouchSensor::TOUCH_LONG_PRESS:
-            // Brief stronger pulse for long press feedback
-            vibrationMotor.stop();
-            vibrationMotor.startTimed(80, 100);  // 80% for 100ms pulse
             Console::print(F("Long press detected ("));
             Console::print(String(duration));
             Console::println(F("ms)"));
+            
+            // Check if touch sensor is enabled
+            if (!touchSensorEnabled) {
+                Console::println(F("Touch sensor disabled - ignoring long press"));
+                return;
+            }
+            
+            // Longer vibration for long press feedback (reduced intensity)
+            vibrationMotor.startTimed(60, TOUCH_VIBRATION_LONG_DURATION);  // 60% for 200ms
+            
+            // Check if feeding is currently in progress
+            if (moduleManager.getFeedingInProgress()) {
+                // CANCEL FEEDING - Use centralized method
+                cancelFeeding();
+            } else {
+                // START FEEDING - Use centralized method with configured portions
+                startFeeding(touchLongPressPortions, true);
+            }
             break;
     }
 }
@@ -432,6 +562,16 @@ void setup() {
     // Register callback for touch events (vibration feedback)
     touchSensor.setCallback(onTouchEvent);
     Console::printlnR(F("Touch sensor callback registered (vibration feedback)"));
+    
+    // Load touch long press portions from NVRAM
+    touchPreferences.begin("touch", false);
+    touchLongPressPortions = touchPreferences.getUChar(TOUCH_LONG_PRESS_PORTIONS_NVRAM_KEY, DEFAULT_TOUCH_LONG_PRESS_PORTIONS);
+    touchSensorEnabled = touchPreferences.getBool(TOUCH_SENSOR_ENABLED_NVRAM_KEY, DEFAULT_TOUCH_SENSOR_ENABLED);
+    touchPreferences.end();
+    Console::printR(F("Touch long press portions loaded from NVRAM: "));
+    Console::printlnR(String(touchLongPressPortions));
+    Console::printR(F("Touch sensor enabled: "));
+    Console::printlnR(touchSensorEnabled ? F("YES") : F("NO"));
   } else {
     Console::printlnR(F("ERROR: Failed to initialize touch sensor"));
   }
@@ -602,6 +742,154 @@ void setup() {
   // 🚨 STATUS: READY - Green 60% static
   rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
 }
+
+// ============================================================================
+// HELPER FUNCTIONS FOR EXTERNAL ACCESS
+// ============================================================================
+
+/**
+ * Start feeding operation (centralized method for all sources)
+ * 
+ * This method ensures consistent behavior across all feeding sources:
+ * - Manual feeding via serial command
+ * - Scheduled automatic feeding
+ * - Touch sensor long press
+ * - WiFi web interface
+ * - API endpoints
+ * 
+ * @param portions: Number of portions to dispense
+ * @param recordInSchedule: Whether to record this as manual feeding in schedule
+ * @return: true if feeding started successfully, false otherwise
+ */
+bool startFeeding(uint8_t portions, bool recordInSchedule) {
+    // Validate portions
+    if (portions < MIN_FOOD_PORTIONS || portions > MAX_FOOD_PORTIONS) {
+        String msg = String(F("✗ Invalid portion count: ")) + String(portions);
+        Console::printlnR(msg);
+        return false;
+    }
+    
+    // Check if already feeding
+    if (moduleManager.getFeedingInProgress()) {
+        Console::printlnR(F("✗ Feeding already in progress"));
+        return false;
+    }
+    
+    // Check if controller is ready
+    if (!feedingController.isReady()) {
+        Console::printlnR(F("✗ Feeding controller not ready"));
+        return false;
+    }
+    
+    String msg = String(F("▶ Starting feeding: ")) + String(portions) + String(F(" portions"));
+    Console::printlnR(msg);
+    
+    // Start async feeding
+    if (feedingController.dispenseFoodAsync(portions)) {
+        // Mark feeding as in progress
+        moduleManager.setFeedingInProgress(true);
+        
+        // Enable monitoring task
+        tFeedingMonitor.enable();
+        
+        // LED will automatically transition to FEEDING via updateLEDStatus()
+        
+        // Record in schedule system if requested
+        if (recordInSchedule && moduleManager.hasFeedingSchedule() && moduleManager.hasRTCModule()) {
+            DateTime now = moduleManager.getRTCModule()->now();
+            moduleManager.getFeedingSchedule()->recordManualFeeding(now);
+        }
+        
+        Console::printlnR(F("✓ Feeding started successfully"));
+        return true;
+    }
+    
+    Console::printlnR(F("✗ Failed to start feeding"));
+    return false;
+}
+
+/**
+ * Cancel ongoing feeding operation
+ * Can be called from any source (touch sensor, API, command)
+ * 
+ * @return: true if feeding was canceled, false if no feeding in progress
+ */
+bool cancelFeeding() {
+    if (!moduleManager.getFeedingInProgress()) {
+        Console::printlnR(F("ℹ No feeding in progress to cancel"));
+        return false;
+    }
+    
+    Console::printlnR(F("⚠ Canceling feeding operation..."));
+    
+    // Stop motor immediately - clears target position
+    feedMotor.stop();
+    
+    // Mark feeding as completed
+    moduleManager.setFeedingInProgress(false);
+    
+    // Disable monitoring task
+    tFeedingMonitor.disable();
+    
+    // Trigger cancel flash - will auto-transition to READY after timeout
+    currentLEDState = LED_STATE_CANCEL_FLASH;
+    applyLEDState(LED_STATE_CANCEL_FLASH);
+    
+    Console::printlnR(F("✓ Feeding canceled successfully"));
+    return true;
+}
+
+/**
+ * Get current touch long press portions setting
+ */
+uint8_t getTouchLongPressPortions() {
+    return touchLongPressPortions;
+}
+
+/**
+ * Set touch long press portions and save to NVRAM
+ */
+void setTouchLongPressPortions(uint8_t portions) {
+    // Validate range
+    if (portions < MIN_FOOD_PORTIONS) portions = MIN_FOOD_PORTIONS;
+    if (portions > MAX_FOOD_PORTIONS) portions = MAX_FOOD_PORTIONS;
+    
+    touchLongPressPortions = portions;
+    
+    // Save to NVRAM
+    touchPreferences.begin("touch", false);
+    touchPreferences.putUChar(TOUCH_LONG_PRESS_PORTIONS_NVRAM_KEY, portions);
+    touchPreferences.end();
+    
+    Console::printR(F("Touch long press portions set to: "));
+    Console::printlnR(String(portions));
+}
+
+/**
+ * Get current touch sensor enabled state
+ */
+bool getTouchSensorEnabled() {
+    return touchSensorEnabled;
+}
+
+/**
+ * Set touch sensor enabled/disabled state and save to NVRAM
+ */
+void setTouchSensorEnabled(bool enabled) {
+    touchSensorEnabled = enabled;
+    
+    // Save to NVRAM
+    touchPreferences.begin("touch", false);
+    touchPreferences.putBool(TOUCH_SENSOR_ENABLED_NVRAM_KEY, enabled);
+    touchPreferences.end();
+    
+    Console::printR(F("Touch sensor "));
+    Console::printlnR(enabled ? F("ENABLED") : F("DISABLED"));
+}
+
+// ============================================================================
+// MAIN LOOP
+// ============================================================================
 
 /**
  * Task: Process WiFi portal in non-blocking mode

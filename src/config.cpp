@@ -165,6 +165,33 @@ const unsigned long TOUCH_SENSOR_LONG_PRESS_DURATION = 1000;
 // OPTIMIZATION: Reduced from 20ms to 5ms for faster tactile feedback
 const unsigned long TOUCH_SENSOR_MAINTENANCE_INTERVAL = 5;
 
+// Default number of portions to dispense on touch sensor long press
+// TOUCH LONG PRESS FEEDING:
+//   • User can hold touch sensor to trigger automatic feeding
+//   • Configurable portion count (1-10 portions recommended)
+//   • Stored in NVRAM for persistence across reboots
+//   • Can be modified via serial commands or web interface
+const uint8_t DEFAULT_TOUCH_LONG_PRESS_PORTIONS = 2;
+
+// NVRAM key for storing touch long press portions preference
+const char* TOUCH_LONG_PRESS_PORTIONS_NVRAM_KEY = "touch_portions";
+
+// Touch sensor enabled/disabled state (default: enabled)
+// When disabled, touch sensor won't trigger feeding or vibration
+// LED status indications continue to work normally
+const bool DEFAULT_TOUCH_SENSOR_ENABLED = true;
+
+// NVRAM key for storing touch sensor enabled/disabled state
+const char* TOUCH_SENSOR_ENABLED_NVRAM_KEY = "touch_enabled";
+
+// Touch vibration feedback durations
+// VIBRATION FEEDBACK DURATIONS:
+//   • Short vibration: Quick tactile feedback on touch
+//   • Long vibration: Extended feedback on long press detection
+//   • Durations optimized for clear user perception
+const unsigned long TOUCH_VIBRATION_SHORT_DURATION = 50;   // 50ms quick buzz
+const unsigned long TOUCH_VIBRATION_LONG_DURATION = 200;   // 200ms extended buzz
+
 // ============================================================================
 // SERIAL COMMUNICATION CONFIGURATION VALUES
 // ============================================================================

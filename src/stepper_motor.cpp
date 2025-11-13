@@ -428,8 +428,18 @@ bool StepperMotor::isRunning() const {
  * Stop motor and disable coils
  */
 void StepperMotor::stop() {
+    if (!isInitialized || !stepper) {
+        return;
+    }
+    
+    // CRITICAL: Stop movement immediately by clearing target position
+    stepper->stop();  // AccelStepper's stop() sets target to current position
+    stepper->setCurrentPosition(0);  // Reset position counter
+    
+    // Disable motor coils to save power and stop holding torque
     disableMotor();
-    Serial.println(F("Motor stopped"));
+    
+    Serial.println(F("Motor stopped - target cleared, coils disabled"));
 }
 
 /**

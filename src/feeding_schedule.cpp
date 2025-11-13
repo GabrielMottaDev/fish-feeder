@@ -4,6 +4,9 @@
 #include "rtc_module.h"
 #include "config.h"
 
+// External functions from main.cpp for centralized feeding operations
+extern bool startFeeding(uint8_t portions, bool recordInSchedule);
+
 /**
  * Constructor
  */
@@ -305,33 +308,20 @@ void FeedingSchedule::executeFeeding(const ScheduledFeeding& schedule) {
         feedingTime = DateTime(2000, 1, 1, 0, 0, 0);
     }
     
-    // 🚨 CRITICAL FIX: Set global feeding state BEFORE starting motor
-    // This ensures RGB LED monitoring and status tracking work correctly
-    modules->setFeedingInProgress(true);
-    
-    // Start feeding via controller
-    if (modules->getFeedingController()->dispenseFoodAsync(schedule.portions)) {
+    // Use centralized feeding method (with recordInSchedule = false since schedule handles it)
+    if (startFeeding(schedule.portions, false)) {
         feedingInProgress = true;
         
-        // 🚨 CRITICAL FIX: Enable feeding monitor to track completion and control LED
-        if (enableMonitorCallback) {
-            enableMonitorCallback();
-            Console::printlnR(F("FeedingSchedule: Feeding monitor enabled"));
-        } else {
-            Console::printlnR(F("FeedingSchedule: WARNING - No monitor callback registered"));
-        }
-        
         Console::printlnR(F("FeedingSchedule: Feeding started successfully"));
+        
+        // Record this feeding time
+        lastCompletedFeeding = feedingTime;
+        saveLastFeedingToNVRAM(feedingTime);
     } else {
         Console::printlnR(F("FeedingSchedule: ERROR - Failed to start feeding"));
-        modules->setFeedingInProgress(false); // Reset on failure
         feedingInProgress = false;
-        return; // Don't record feeding if it failed to start
+        // Don't record feeding if it failed to start
     }
-    
-    // Record this feeding time
-    lastCompletedFeeding = feedingTime;
-    saveLastFeedingToNVRAM(feedingTime);
 }
 
 /**

@@ -19,6 +19,10 @@ extern void resumeMotorTask();
 extern void showTaskStatus();
 extern void enableFeedingMonitor();
 
+// Forward declarations for centralized feeding operations (implemented in main.cpp)
+extern bool startFeeding(uint8_t portions, bool recordInSchedule);
+extern bool cancelFeeding();
+
 /**
  * Constructor: Initialize command listener with ModuleManager
  */
@@ -128,12 +132,6 @@ bool CommandListener::processTaskCommands(const String& command) {
  */
 bool CommandListener::processMotorCommands(const String& command) {
     if (command.startsWith("FEED")) {
-        // Check if feeding is already in progress
-        if (modules->getFeedingInProgress()) {
-            Console::printlnR(F("Feeding already in progress. Please wait..."));
-            return true;
-        }
-        
         // Parse number of portions (default 1)
         int portions = 1;
         int spaceIndex = command.indexOf(' ');
@@ -143,11 +141,8 @@ bool CommandListener::processMotorCommands(const String& command) {
             if (portions <= 0) portions = 1;
         }
         
-        // Use async feeding to avoid blocking the scheduler
-        if (modules->getFeedingController()->dispenseFoodAsync(portions)) {
-            modules->setFeedingInProgress(true);
-            enableFeedingMonitor(); // Start monitoring
-        }
+        // Use centralized feeding method
+        startFeeding(portions, true);
         return true;
     }
     else if (command == "CALIBRATE") {
