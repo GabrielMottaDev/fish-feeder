@@ -50,6 +50,18 @@ const float DEFAULT_MAX_SPEED = 1200.0f;
 //   • RECOMMENDED RANGE: 300-800 steps/sec² for reliable feeding operation
 const float DEFAULT_ACCELERATION = 800.0f;
 
+// Default motor rotation direction for feeding operations
+// MOTOR DIRECTION CONFIGURATION:
+//   • true = CLOCKWISE (CW): Motor rotates in positive direction
+//   • false = COUNTER-CLOCKWISE (CCW): Motor rotates in negative direction
+//   • RECOMMENDED: Test both directions to determine correct dispensing direction
+//   • Can be changed at runtime via serial commands or web interface
+//   • Stored in NVRAM for persistence across reboots
+const bool DEFAULT_MOTOR_CLOCKWISE = false;
+
+// NVRAM key for storing motor direction preference
+const char* MOTOR_DIRECTION_NVRAM_KEY = "motor_direction";
+
 // ============================================================================
 // VIBRATION MOTOR CONFIGURATION VALUES
 // ============================================================================

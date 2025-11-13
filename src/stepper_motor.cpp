@@ -1,4 +1,9 @@
 #include "stepper_motor.h"
+#include "config.h"
+#include <Preferences.h>
+
+// Preferences object for NVRAM storage
+Preferences motorPreferences;
 
 /**
  * Constructor: Initialize stepper motor with pin configuration
@@ -9,7 +14,7 @@
 StepperMotor::StepperMotor(int in1, int in2, int in3, int in4, int stepsPerRev) 
     : pin1(in1), pin2(in2), pin3(in3), pin4(in4), 
       stepsPerRevolution(stepsPerRev), stepper(nullptr), isInitialized(false),
-      maxSpeed(1200.0), acceleration(800.0) {
+      maxSpeed(1200.0), acceleration(800.0), motorDirectionClockwise(DEFAULT_MOTOR_CLOCKWISE) {
 }
 
 /**
@@ -29,6 +34,14 @@ StepperMotor::~StepperMotor() {
  */
 bool StepperMotor::begin() {
     Serial.println(F("Initializing Stepper Motor (28BYJ-48) with AccelStepper..."));
+    
+    // Load motor direction from NVRAM
+    motorPreferences.begin("motor", false);
+    motorDirectionClockwise = motorPreferences.getBool(MOTOR_DIRECTION_NVRAM_KEY, DEFAULT_MOTOR_CLOCKWISE);
+    motorPreferences.end();
+    
+    Serial.print(F("Motor direction loaded from NVRAM: "));
+    Serial.println(motorDirectionClockwise ? F("CLOCKWISE (CW)") : F("COUNTER-CLOCKWISE (CCW)"));
     
     // Create AccelStepper instance with FULL4WIRE interface
     // Pin order for ULN2003: IN1, IN3, IN2, IN4 (proper sequence)
@@ -147,6 +160,33 @@ void StepperMotor::setSpeed(float speed) {
 }
 
 /**
+ * Set motor rotation direction for feeding operations
+ * 
+ * @param clockwise: true = clockwise, false = counter-clockwise
+ */
+void StepperMotor::setMotorDirection(bool clockwise) {
+    motorDirectionClockwise = clockwise;
+    
+    // Save to NVRAM for persistence
+    motorPreferences.begin("motor", false);
+    motorPreferences.putBool(MOTOR_DIRECTION_NVRAM_KEY, clockwise);
+    motorPreferences.end();
+    
+    Serial.print(F("Motor direction set to: "));
+    Serial.println(clockwise ? F("CLOCKWISE (CW)") : F("COUNTER-CLOCKWISE (CCW)"));
+    Serial.println(F("Direction saved to NVRAM"));
+}
+
+/**
+ * Get current motor rotation direction
+ * 
+ * @return true if clockwise, false if counter-clockwise
+ */
+bool StepperMotor::getMotorDirection() const {
+    return motorDirectionClockwise;
+}
+
+/**
  * Step motor clockwise by specified number of steps (blocking)
  * 
  * @param steps: Number of steps to move
@@ -162,7 +202,10 @@ void StepperMotor::stepClockwise(int steps) {
     Serial.println(F(" steps clockwise"));
     
     long currentPos = stepper->currentPosition();
-    stepper->moveTo(currentPos + steps);
+    
+    // Apply direction: if motor direction is CCW, invert the steps
+    int adjustedSteps = motorDirectionClockwise ? steps : -steps;
+    stepper->moveTo(currentPos + adjustedSteps);
     
     // Run until target is reached
     while (stepper->distanceToGo() != 0) {
@@ -189,7 +232,10 @@ void StepperMotor::stepCounterClockwise(int steps) {
     Serial.println(F(" steps counter-clockwise"));
     
     long currentPos = stepper->currentPosition();
-    stepper->moveTo(currentPos - steps);
+    
+    // Apply direction: if motor direction is CCW, invert the steps
+    int adjustedSteps = motorDirectionClockwise ? -steps : steps;
+    stepper->moveTo(currentPos + adjustedSteps);
     
     // Run until target is reached
     while (stepper->distanceToGo() != 0) {
@@ -421,6 +467,8 @@ void StepperMotor::printStatus() const {
         Serial.print(F("Acceleration: "));
         Serial.print(acceleration);
         Serial.println(F(" steps/sec²"));
+        Serial.print(F("Motor Direction: "));
+        Serial.println(motorDirectionClockwise ? F("CLOCKWISE (CW)") : F("COUNTER-CLOCKWISE (CCW)"));
     }
     
     Serial.print(F("Steps per Revolution: "));

@@ -137,7 +137,45 @@ void WiFiController::registerAllEndpoints() {
     });
     Console::printlnR("✓ Registered: /close");
     
-    // 4. Schedule API endpoints (the critical ones)
+    // 4. Motor direction endpoint
+    wifiManager.server->on("/api/motor-direction", HTTP_GET, [this]() {
+        if (modules && modules->getStepperMotor() && modules->getStepperMotor()->isReady()) {
+            bool isClockwise = modules->getStepperMotor()->getMotorDirection();
+            String json = "{\"success\":true,\"direction\":\"" + String(isClockwise ? "CW" : "CCW") + "\",\"description\":\"" + String(isClockwise ? "Clockwise" : "Counter-clockwise") + "\"}";
+            wifiManager.server->send(200, "application/json", json);
+        } else {
+            wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Motor not ready\"}");
+        }
+    });
+    Console::printlnR("✓ Registered: /api/motor-direction (GET)");
+    
+    wifiManager.server->on("/api/motor-direction/set", HTTP_GET, [this]() {
+        if (!modules || !modules->getStepperMotor() || !modules->getStepperMotor()->isReady()) {
+            wifiManager.server->send(500, "application/json", "{\"success\":false,\"message\":\"Motor not ready\"}");
+            return;
+        }
+        
+        if (!wifiManager.server->hasArg("direction")) {
+            wifiManager.server->send(400, "application/json", "{\"success\":false,\"message\":\"Missing 'direction' parameter. Use: /api/motor-direction/set?direction=CW or CCW\"}");
+            return;
+        }
+        
+        String direction = wifiManager.server->arg("direction");
+        direction.toUpperCase();
+        
+        if (direction == "CW" || direction == "CLOCKWISE") {
+            modules->getStepperMotor()->setMotorDirection(true);
+            wifiManager.server->send(200, "application/json", "{\"success\":true,\"direction\":\"CW\",\"message\":\"Motor direction set to CLOCKWISE\"}");
+        } else if (direction == "CCW" || direction == "COUNTERCLOCKWISE" || direction == "COUNTER-CLOCKWISE") {
+            modules->getStepperMotor()->setMotorDirection(false);
+            wifiManager.server->send(200, "application/json", "{\"success\":true,\"direction\":\"CCW\",\"message\":\"Motor direction set to COUNTER-CLOCKWISE\"}");
+        } else {
+            wifiManager.server->send(400, "application/json", "{\"success\":false,\"message\":\"Invalid direction. Use 'CW' or 'CCW'\"}");
+        }
+    });
+    Console::printlnR("✓ Registered: /api/motor-direction/set (GET)");
+    
+    // 5. Schedule API endpoints (the critical ones)
     Console::printlnR("=== REGISTERING SCHEDULE API ENDPOINTS ===");
     setupScheduleAPIEndpoints();
     
@@ -1384,6 +1422,14 @@ String WiFiController::generateScheduleManagementPage() {
     html += "<input type='number' id='recovery' class='form-control' min='1' max='72' value='12'>";
     html += "<button class='btn btn-primary btn-small' onclick='setRecovery()'>Update</button>";
     html += "</div>";
+    html += "<div class='form-group'>";
+    html += "<label>Motor Rotation Direction</label>";
+    html += "<div style='display: flex; gap: 10px; margin-top: 8px;'>";
+    html += "<button id='btnCW' class='btn btn-primary btn-small' onclick='setMotorDirection(\"CW\")'>&#8635; Clockwise</button>";
+    html += "<button id='btnCCW' class='btn btn-primary btn-small' onclick='setMotorDirection(\"CCW\")'>&#8634; Counter-clockwise</button>";
+    html += "</div>";
+    html += "<div id='motorDirectionStatus' style='margin-top: 8px; font-size: 0.9em; color: #7f8c8d;'>Loading...</div>";
+    html += "</div>";
     html += "</div>";
     html += "</div>";
     
@@ -1628,6 +1674,58 @@ String WiFiController::generateScheduleManagementPage() {
     html += "  if(hasUnsavedChanges && !confirm('You have unsaved changes. Refreshing will discard them. Continue?')) return;";
     html += "  loadSchedules();";
     html += "  loadStatus();";
+    html += "  loadMotorDirection();";
+    html += "}";
+    
+    // Load motor direction
+    html += "function loadMotorDirection() {";
+    html += "  apiGet('/api/motor-direction?t=' + Date.now(), function(result) {";
+    html += "    if(result && result.success) {";
+    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
+    html += "      if(statusEl) {";
+    html += "        statusEl.textContent = 'Current: ' + result.description + ' (' + result.direction + ')';";
+    html += "        statusEl.style.color = '#27ae60';";
+    html += "      }";
+    html += "      const btnCW = document.getElementById('btnCW');";
+    html += "      const btnCCW = document.getElementById('btnCCW');";
+    html += "      if(result.direction === 'CW') {";
+    html += "        if(btnCW) btnCW.style.background = '#27ae60';";
+    html += "        if(btnCCW) btnCCW.style.background = '#3498db';";
+    html += "      } else {";
+    html += "        if(btnCW) btnCW.style.background = '#3498db';";
+    html += "        if(btnCCW) btnCCW.style.background = '#27ae60';";
+    html += "      }";
+    html += "    } else {";
+    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
+    html += "      if(statusEl) {";
+    html += "        statusEl.textContent = 'Error loading direction';";
+    html += "        statusEl.style.color = '#e74c3c';";
+    html += "      }";
+    html += "    }";
+    html += "  });";
+    html += "}";
+    
+    // Set motor direction
+    html += "function setMotorDirection(direction) {";
+    html += "  console.log('Setting motor direction to:', direction);";
+    html += "  apiGet('/api/motor-direction/set?direction=' + direction + '&t=' + Date.now(), function(result) {";
+    html += "    if(result && result.success) {";
+    html += "      console.log('Direction changed successfully:', result);";
+    html += "      loadMotorDirection();";
+    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
+    html += "      if(statusEl) {";
+    html += "        statusEl.textContent = '✓ ' + result.message;";
+    html += "        statusEl.style.color = '#27ae60';";
+    html += "      }";
+    html += "    } else {";
+    html += "      console.error('Direction change failed:', result);";
+    html += "      const statusEl = document.getElementById('motorDirectionStatus');";
+    html += "      if(statusEl) {";
+    html += "        statusEl.textContent = '✗ ' + (result ? result.message : 'Error');";
+    html += "        statusEl.style.color = '#e74c3c';";
+    html += "      }";
+    html += "    }";
+    html += "  });";
     html += "}";
     
     // Clock update
@@ -1649,6 +1747,7 @@ String WiFiController::generateScheduleManagementPage() {
     html += "window.onload = function() {";
     html += "  loadSchedules();";
     html += "  loadStatus();";
+    html += "  loadMotorDirection();";
     html += "  updateClock();";
     html += "  setInterval(updateClock, 1000);";
     html += "  window.addEventListener('beforeunload', function(e) {";

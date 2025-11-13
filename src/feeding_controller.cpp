@@ -102,10 +102,14 @@ bool FeedingController::dispenseFoodAsync(int portions) {
     Serial.print(portions);
     Serial.println(F(" food portion(s)..."));
     
-    // Calculate steps and start async movement
+    // Calculate steps and apply direction configuration
     int steps = portionsToSteps(portions);
     long currentPos = motor->getCurrentPosition();
-    motor->moveToPositionAsync(currentPos + steps);
+    
+    // Apply motor direction: if CCW, steps should be negative
+    int adjustedSteps = motor->getMotorDirection() ? steps : -steps;
+    
+    motor->moveToPositionAsync(currentPos + adjustedSteps);
     
     return true;
 }

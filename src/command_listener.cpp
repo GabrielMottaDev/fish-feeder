@@ -200,6 +200,30 @@ bool CommandListener::processMotorCommands(const String& command) {
         modules->getStepperMotor()->enablePowerSavingMode();
         return true;
     }
+    else if (command.startsWith("DIRECTION")) {
+        int spaceIndex = command.indexOf(' ');
+        if (spaceIndex > 0) {
+            String directionStr = command.substring(spaceIndex + 1);
+            directionStr.toUpperCase();
+            
+            if (directionStr == "CW" || directionStr == "CLOCKWISE") {
+                modules->getStepperMotor()->setMotorDirection(true);
+                Console::printlnR(F("Motor direction set to CLOCKWISE (CW)"));
+                return true;
+            }
+            else if (directionStr == "CCW" || directionStr == "COUNTERCLOCKWISE" || directionStr == "COUNTER-CLOCKWISE") {
+                modules->getStepperMotor()->setMotorDirection(false);
+                Console::printlnR(F("Motor direction set to COUNTER-CLOCKWISE (CCW)"));
+                return true;
+            }
+        }
+        
+        // Show current direction and usage
+        Console::printR(F("Current direction: "));
+        Console::printlnR(modules->getStepperMotor()->getMotorDirection() ? F("CLOCKWISE (CW)") : F("COUNTER-CLOCKWISE (CCW)"));
+        Console::printlnR(F("Usage: DIRECTION [CW|CCW]"));
+        return true;
+    }
     return false;
 }
 
@@ -252,6 +276,7 @@ void CommandListener::showHelp() {
     Console::printlnR(F("  CONFIG                  - Show feeding configuration"));
     Console::printlnR(F("  STEP CW [steps]         - Step clockwise"));
     Console::printlnR(F("  STEP CCW [steps]        - Step counter-clockwise"));
+    Console::printlnR(F("  DIRECTION [CW|CCW]      - Set/show motor rotation direction"));
     Console::printlnR(F("  MOTOR HIGH PERFORMANCE  - Enable max speed/torque mode"));
     Console::printlnR(F("  MOTOR POWER SAVING      - Enable power-efficient mode"));    
     Console::printlnR(F(""));

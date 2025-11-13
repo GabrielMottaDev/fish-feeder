@@ -52,6 +52,12 @@ extern const float DEFAULT_MAX_SPEED;
 // Default acceleration in steps per second squared
 extern const float DEFAULT_ACCELERATION;
 
+// Default motor rotation direction (true = clockwise, false = counter-clockwise)
+extern const bool DEFAULT_MOTOR_CLOCKWISE;
+
+// NVRAM key for storing motor direction preference
+extern const char* MOTOR_DIRECTION_NVRAM_KEY;
+
 /**
  * Vibration Motor Configuration
  * 

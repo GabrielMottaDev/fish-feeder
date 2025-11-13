@@ -23,6 +23,7 @@ private:
     bool isInitialized;                  // Initialization status
     float maxSpeed;                      // Maximum speed in steps/second
     float acceleration;                  // Acceleration in steps/second^2
+    bool motorDirectionClockwise;        // Motor rotation direction (true = CW, false = CCW)
     
     // Internal methods
     void initializePins();
@@ -38,6 +39,8 @@ public:
     void setMaxSpeed(float speed);           // Set max speed in steps/second
     void setAcceleration(float accel);       // Set acceleration in steps/second^2
     void setSpeed(float speed);              // Set constant speed for runSpeed()
+    void setMotorDirection(bool clockwise);  // Set rotation direction (true = CW, false = CCW)
+    bool getMotorDirection() const;          // Get current rotation direction
     
     // Movement methods (blocking)
     void stepClockwise(int steps);
