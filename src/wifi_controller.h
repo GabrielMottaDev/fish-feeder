@@ -49,6 +49,25 @@ private:
     unsigned long lastConnectionCheck;
     bool wasConnectedBefore;
     
+    // Reconnection strategy with WiFi reset (IoT standard pattern with exponential backoff)
+    unsigned long errorStateStartTime;  // When error state (red LED) started
+    bool inErrorState;                  // Currently in error state
+    int reconnectionAttempts;           // Counter for reconnection attempts
+    static const int MAX_RECONNECTION_ATTEMPTS = 10;  // Maximum reconnection attempts before giving up
+    
+    // Exponential backoff intervals (in milliseconds)
+    static constexpr unsigned long RECONNECTION_INTERVALS[] = {
+        0,      // Attempt 1: immediate
+        0,      // Attempt 2: immediate
+        5000,   // Attempt 3: 5 seconds
+        10000,  // Attempt 4: 10 seconds
+        30000,  // Attempt 5: 30 seconds
+        60000   // Attempt 6+: 60 seconds
+    };
+    
+    // Get reconnection interval based on attempt number
+    unsigned long getReconnectionInterval() const;
+    
     // Non-blocking connection state machine
     enum WiFiConnectionState {
         WIFI_IDLE,
@@ -85,6 +104,10 @@ private:
     
     // Non-blocking connection state machine
     void processConnectionState();
+    
+    // WiFi reset and reconnection strategy
+    void resetWiFiHardware();           // Complete WiFi hardware reset
+    void handleErrorStateReconnection(); // Handle reconnection in error state
     
 public:
     // Constructor

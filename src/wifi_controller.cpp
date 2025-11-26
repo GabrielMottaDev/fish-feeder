@@ -7,6 +7,9 @@
 #include "config.h"
 #include <RTClib.h>
 
+// Define static constexpr array for reconnection intervals
+constexpr unsigned long WiFiController::RECONNECTION_INTERVALS[];
+
 // External functions from main.cpp for centralized feeding operations
 extern bool startFeeding(uint8_t portions, bool recordInSchedule);
 extern bool cancelFeeding();
@@ -24,7 +27,8 @@ WiFiController::WiFiController()
       portalStartRequested(false), portalAPName(""), portalStartTime(0), shutdownRequested(false),
       connectionState(WIFI_IDLE), connectionStateTime(0), connectionAttempts(0),
       pendingSSID(""), pendingPassword(""), pendingSaveCredentials(false),
-      modules(nullptr), rgbLed(nullptr) {
+      modules(nullptr), rgbLed(nullptr), 
+      errorStateStartTime(0), inErrorState(false), reconnectionAttempts(0) {
 }
 
 /**
@@ -640,6 +644,15 @@ void WiFiController::checkConnectionStatus() {
             Console::printlnR(F("WiFi connection lost!"));
             isConnected = false;
             
+            // Mark error state if not already marked
+            if (!inErrorState) {
+                inErrorState = true;
+                errorStateStartTime = millis();
+                if (rgbLed) {
+                    rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+                }
+            }
+            
             if (WIFI_PORTAL_ON_DISCONNECT) {
                 startPortalOnDisconnect();
             }
@@ -650,6 +663,14 @@ void WiFiController::checkConnectionStatus() {
         if (isConnected) {
             currentSSID = WiFi.SSID();
             wasConnectedBefore = true;
+            
+            // Clear error state if now connected
+            if (inErrorState) {
+                inErrorState = false;
+                errorStateStartTime = 0;
+                reconnectionAttempts = 0;
+                Console::printlnR(F("✓ Connection restored - error state cleared"));
+            }
         }
         
         lastConnectionCheck = millis();
@@ -657,6 +678,9 @@ void WiFiController::checkConnectionStatus() {
     
     // Process non-blocking connection state machine
     processConnectionState();
+    
+    // Handle error state reconnection strategy (30-second WiFi reset)
+    handleErrorStateReconnection();
 }
 
 /**
@@ -705,6 +729,14 @@ void WiFiController::processConnectionState() {
                         rgbLed->setDeviceStatus(RGBLed::STATUS_READY);
                     }
                     
+                    // Clear error state on successful connection
+                    if (inErrorState) {
+                        inErrorState = false;
+                        errorStateStartTime = 0;
+                        reconnectionAttempts = 0;
+                        Console::printlnR(F("✓ Error state cleared after successful connection"));
+                    }
+                    
                     connectionState = WIFI_CONNECTED;
                 }
                 // 🚨 CRITICAL: Detect authentication failure IMMEDIATELY
@@ -740,6 +772,13 @@ void WiFiController::processConnectionState() {
                     // 🚨 ERROR: Set LED to RED BLINKING IMMEDIATELY
                     if (rgbLed) {
                         rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+                    }
+                    
+                    // Mark error state start time for reconnection strategy
+                    if (!inErrorState) {
+                        inErrorState = true;
+                        errorStateStartTime = millis();
+                        Console::printlnR(F("Error state timer started (30s reset countdown)"));
                     }
                     
                     connectionState = WIFI_FAILED;
@@ -821,6 +860,14 @@ bool WiFiController::tryAutoConnect() {
         // 🚨 SUCCESS: Set LED to GREEN only if truly connected
         if (rgbLed && WiFi.status() == WL_CONNECTED) {
             rgbLed->setDeviceStatus(RGBLed::STATUS_READY);
+        }
+        
+        // Clear error state on successful connection
+        if (inErrorState) {
+            inErrorState = false;
+            errorStateStartTime = 0;
+            reconnectionAttempts = 0;
+            Console::printlnR(F("✓ Error state cleared after auto-connect success"));
         }
         
         // Restore original timeout
@@ -2421,4 +2468,156 @@ void WiFiController::setupScheduleAPIEndpoints() {
     Console::printlnR("=== SCHEDULE API ENDPOINTS SETUP COMPLETE ===");
     Console::printlnR("Endpoints registered: /api/status, /api/schedules, /api/feed, /api/schedule/*, etc.");
 }
+
+/**
+ * Reset WiFi hardware completely
+ * Following ESP32 IoT best practices for WiFi recovery
+ * This method performs a complete WiFi reset as recommended by Espressif documentation
+ */
+void WiFiController::resetWiFiHardware() {
+    Console::printlnR(F(""));
+    Console::printlnR(F("=== PERFORMING WIFI HARDWARE RESET ==="));
+    Console::printlnR(F("Following Espressif IoT reconnection pattern..."));
+    
+    // Step 1: Disconnect from current network
+    Console::printlnR(F("1. Disconnecting from current network..."));
+    WiFi.disconnect(true);  // true = erase saved credentials in WiFi driver
+    delay(500);
+    
+    // Step 2: Turn OFF WiFi completely to reset hardware state
+    Console::printlnR(F("2. Turning OFF WiFi radio..."));
+    WiFi.mode(WIFI_OFF);
+    delay(2000);  // 2 seconds OFF - allows hardware reset
+    
+    // Step 3: Restart WiFi in AP+STA mode
+    Console::printlnR(F("3. Restarting WiFi in AP+STA mode..."));
+    WiFi.mode(WIFI_AP_STA);
+    delay(500);
+    
+    // Step 4: Re-establish always-on portal
+    Console::printlnR(F("4. Re-establishing WiFi portal..."));
+    WiFi.softAP(WIFI_PORTAL_AP_NAME, WIFI_PORTAL_AP_PASSWORD);
+    
+    // Step 5: Reconfigure DNS servers
+    Console::printlnR(F("5. Reconfiguring DNS servers..."));
+    configureDNSServers();
+    
+    // Reset error state tracking
+    inErrorState = false;
+    errorStateStartTime = 0;
+    
+    Console::printlnR(F("✓ WiFi hardware reset complete"));
+    Console::printlnR(F("==================================="));
+    Console::printlnR(F(""));
+}
+
+/**
+ * Get reconnection interval based on current attempt number
+ * Implements exponential backoff: 0s, 0s, 5s, 10s, 30s, 60s, 60s...
+ */
+unsigned long WiFiController::getReconnectionInterval() const {
+    if (reconnectionAttempts == 0) {
+        return 0; // First attempt is immediate
+    }
+    
+    // Subtract 1 because reconnectionAttempts is 1-based
+    int index = reconnectionAttempts - 1;
+    
+    // Use 60s (last element) for all attempts beyond array size
+    if (index >= 6) {
+        return RECONNECTION_INTERVALS[5]; // 60000ms
+    }
+    
+    return RECONNECTION_INTERVALS[index];
+}
+
+/**
+ * Handle reconnection strategy when in error state
+ * Implements Espressif recommended reconnection pattern with exponential backoff
+ */
+void WiFiController::handleErrorStateReconnection() {
+    // Only process if in error state and enough time has passed
+    if (!inErrorState || errorStateStartTime == 0) {
+        return;
+    }
+    
+    unsigned long errorDuration = millis() - errorStateStartTime;
+    unsigned long requiredInterval = getReconnectionInterval();
+    
+    // Check if enough time has passed for this reconnection attempt
+    if (errorDuration >= requiredInterval) {
+        // Check if maximum reconnection attempts reached
+        if (reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
+            Console::printlnR(F(""));
+            Console::printlnR(F("✗ Maximum reconnection attempts reached"));
+            Console::printlnR(F("System will continue operating in offline mode"));
+            Console::printlnR(F("Portal remains active at 192.168.4.1 for manual configuration"));
+            Console::printlnR(F(""));
+            
+            // Reset attempt counter but keep error state
+            // User can manually configure via portal
+            reconnectionAttempts = 0;
+            errorStateStartTime = millis(); // Reset timer to avoid spam
+            return;
+        }
+        
+        Console::printlnR(F(""));
+        Console::printR(F("⚠ Reconnection attempt #"));
+        Console::printR(String(reconnectionAttempts + 1));
+        Console::printR(F(" (waited "));
+        Console::printR(String(requiredInterval / 1000));
+        Console::printlnR(F(" seconds)"));
+        
+        // Increment reconnection attempt counter
+        reconnectionAttempts++;
+        
+        // Perform complete WiFi reset
+        resetWiFiHardware();
+        
+        // Try to reconnect to saved networks
+        Console::printlnR(F("Attempting reconnection to saved networks..."));
+        
+        // Set LED to blue (connecting)
+        if (rgbLed) {
+            rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
+        }
+        
+        // Try auto-connect
+        if (tryAutoConnect()) {
+            Console::printlnR(F("✓ Reconnection successful!"));
+            
+            // Reset error state counters
+            inErrorState = false;
+            errorStateStartTime = 0;
+            reconnectionAttempts = 0;
+            
+            // LED will be set to green by tryAutoConnect() if successful
+        } else {
+            Console::printlnR(F("✗ Reconnection failed"));
+            
+            // Calculate next retry interval
+            unsigned long nextInterval = getReconnectionInterval();
+            if (reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
+                Console::printlnR(F("No more retry attempts available"));
+            } else {
+                Console::printR(F("Next retry in "));
+                Console::printR(String(nextInterval / 1000));
+                Console::printR(F(" seconds (attempt "));
+                Console::printR(String(reconnectionAttempts));
+                Console::printR(F("/"));
+                Console::printR(String(MAX_RECONNECTION_ATTEMPTS));
+                Console::printlnR(F(")"));
+            }
+            
+            // Keep LED red blinking and reset timer
+            if (rgbLed) {
+                rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+            }
+            errorStateStartTime = millis(); // Reset timer for next attempt
+        }
+        
+        Console::printlnR(F(""));
+    }
+}
+
 

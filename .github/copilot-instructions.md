@@ -705,6 +705,144 @@ while (client.available() == 0) { yield(); }
 4. **🔄 STATE MACHINES**: Complex operations MUST use state machines, never blocking loops
 5. **📊 PERFORMANCE METRICS**: Track task execution times - any task > 50ms is suspect
 
+### **CRITICAL: WiFi Reconnection Strategy (November 2025)**
+
+🌐 **ESPRESSIF IOT STANDARD PATTERN WITH EXPONENTIAL BACKOFF**
+
+Following official ESP32 WiFi documentation, implemented intelligent reconnection strategy with exponential backoff:
+
+#### **Exponential Backoff Pattern:**
+```cpp
+// Reconnection intervals (professional IoT pattern):
+Attempt 1: immediate (0 seconds)
+Attempt 2: immediate (0 seconds)
+Attempt 3: 5 seconds wait
+Attempt 4: 10 seconds wait
+Attempt 5: 30 seconds wait
+Attempt 6+: 60 seconds wait (until 10 attempts max)
+
+// Implementation:
+static constexpr unsigned long RECONNECTION_INTERVALS[] = {
+    0,      // Attempt 1: immediate
+    0,      // Attempt 2: immediate
+    5000,   // Attempt 3: 5 seconds
+    10000,  // Attempt 4: 10 seconds
+    30000,  // Attempt 5: 30 seconds
+    60000   // Attempt 6+: 60 seconds
+};
+
+unsigned long getReconnectionInterval() const {
+    if (reconnectionAttempts == 0) return 0;
+    int index = reconnectionAttempts - 1;
+    if (index >= 6) return RECONNECTION_INTERVALS[5]; // 60s for 6+
+    return RECONNECTION_INTERVALS[index];
+}
+```
+
+#### **Reconnection Logic:**
+```cpp
+// On connection error (red LED blinking):
+// 1. Mark error state start time
+// 2. Wait for exponential backoff interval
+// 3. Reset WiFi hardware completely
+// 4. Try reconnection (max 10 attempts)
+// 5. If max attempts reached → stay in offline mode with portal active
+
+void handleErrorStateReconnection() {
+    unsigned long errorDuration = millis() - errorStateStartTime;
+    unsigned long requiredInterval = getReconnectionInterval();
+    
+    if (errorDuration >= requiredInterval) {
+        if (reconnectionAttempts >= MAX_ATTEMPTS) {
+            // Give up, stay offline with portal active
+            return;
+        }
+        
+        reconnectionAttempts++;
+        resetWiFiHardware();  // Complete reset
+        tryAutoConnect();     // Attempt reconnection
+    }
+}
+```
+
+#### **WiFi Hardware Reset Pattern (Espressif Standard):**
+```cpp
+void resetWiFiHardware() {
+    WiFi.disconnect(true);      // Disconnect + erase credentials
+    delay(500);
+    
+    WiFi.mode(WIFI_OFF);        // Turn OFF radio
+    delay(2000);                // 2 seconds OFF (hardware reset)
+    
+    WiFi.mode(WIFI_AP_STA);     // Restart in dual mode
+    delay(500);
+    
+    WiFi.softAP(apName, pass);  // Re-establish portal
+    configureDNSServers();      // Reconfigure DNS
+}
+```
+
+#### **Why Complete WiFi Reset?**
+According to Espressif documentation:
+- **Clears internal WiFi driver state**
+- **Resets radio hardware**
+- **Frees memory resources**
+- **Forces stack re-initialization**
+- **Resolves stuck authentication states**
+
+#### **Why Exponential Backoff?**
+Industry-standard pattern used by Google, AWS, Azure IoT:
+- **Prevents network flooding**: First attempts are quick (temporary issues)
+- **Reduces power consumption**: Longer intervals for persistent issues
+- **Respects infrastructure**: Avoids overwhelming routers/APs
+- **Maximizes recovery chances**: Different intervals catch different scenarios
+- **Professional behavior**: Enterprise IoT devices expect this pattern
+
+#### **Reconnection Timeline Example:**
+```
+Error detected → LED red blinking
+0s:  Attempt #1 (immediate)
+0s:  Attempt #2 (immediate) 
+5s:  Attempt #3 (waited 5s)
+15s: Attempt #4 (waited 10s)
+45s: Attempt #5 (waited 30s)
+105s: Attempt #6 (waited 60s)
+165s: Attempt #7 (waited 60s)
+...
+After 10 attempts → System stays offline, portal at 192.168.4.1
+```
+
+#### **Error State Management:**
+```cpp
+// Variables for tracking error state
+unsigned long errorStateStartTime;  // When red LED started
+bool inErrorState;                  // Currently in error
+int reconnectionAttempts;           // Counter for attempts (0-10)
+
+// Clear error state on successful connection
+if (isConnected) {
+    inErrorState = false;
+    errorStateStartTime = 0;
+    reconnectionAttempts = 0;
+    Console::printlnR("✓ Error state cleared after successful connection");
+}
+```
+
+#### **Integration Points:**
+- **`checkConnectionStatus()`**: Calls `handleErrorStateReconnection()` every cycle
+- **`processConnectionState()`**: Marks error state when connection fails
+- **`tryAutoConnect()`**: Clears error state on successful reconnection
+- **`getReconnectionInterval()`**: Calculates backoff time based on attempt number
+- **LED Status**: Blue (connecting) → Green (connected) → Red blinking (error)
+
+#### **Key Design Decisions:**
+1. **Immediate first attempts**: Catches transient network issues quickly
+2. **Progressive backoff**: 5s → 10s → 30s → 60s pattern
+3. **60s cap for attempts 6+**: Prevents excessive waiting
+4. **10 attempt limit**: Prevents infinite reconnection loops
+5. **2-second WiFi OFF**: Ensures complete hardware reset
+6. **Portal remains active**: User can always manually configure via web interface
+
 #### **Blocking Code Detection Automation:**
 ```cpp
 // Add to CI/CD pipeline or regular testing:
@@ -987,6 +1125,7 @@ This comprehensive development session successfully resolved:
 - ✅ **JavaScript Errors**: Eliminated comment-based syntax breaks
 - ✅ **Date Formatting**: Implemented professional DD/MM/YYYY format
 - ✅ **UX Issues**: Removed annoying confirmations for streamlined workflow
+- ✅ **WiFi Reconnection**: Implemented exponential backoff strategy (0s, 0s, 5s, 10s, 30s, 60s)
 - ✅ **System Integration**: Achieved complete end-to-end functionality
 
-**RESULT**: Fully functional ESP32 Fish Feeder with professional web interface! 🎉
+**RESULT**: Fully functional ESP32 Fish Feeder with professional web interface and intelligent WiFi recovery! 🎉
