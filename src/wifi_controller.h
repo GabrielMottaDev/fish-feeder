@@ -11,6 +11,7 @@
 class ModuleManager;
 class FeedingSchedule;
 class FeedingController;
+class RGBLed;
 
 /**
  * WiFiController Class
@@ -37,6 +38,9 @@ private:
     
     // Reference to ModuleManager
     ModuleManager* modules;
+    
+    // Reference to RGB LED for status indication
+    RGBLed* rgbLed;
     
     // WiFi connection state
     String currentSSID;
@@ -89,6 +93,7 @@ public:
     // Initialization
     bool begin();
     void setModuleManager(ModuleManager* moduleManager);
+    void setRGBLed(RGBLed* led);  // Set RGB LED reference for status indication
     void registerAllEndpoints(); // Register ALL endpoints after components are ready
     
     // WiFi Management

@@ -3,6 +3,7 @@
 #include "feeding_schedule.h"
 #include "feeding_controller.h"
 #include "console_manager.h"
+#include "rgb_led.h"
 #include "config.h"
 #include <RTClib.h>
 
@@ -23,7 +24,7 @@ WiFiController::WiFiController()
       portalStartRequested(false), portalAPName(""), portalStartTime(0), shutdownRequested(false),
       connectionState(WIFI_IDLE), connectionStateTime(0), connectionAttempts(0),
       pendingSSID(""), pendingPassword(""), pendingSaveCredentials(false),
-      modules(nullptr) {
+      modules(nullptr), rgbLed(nullptr) {
 }
 
 /**
@@ -37,6 +38,11 @@ bool WiFiController::begin() {
         Console::printlnR(F("ERROR: Failed to initialize preferences storage"));
         return false;
     }
+    
+    // Set WiFi hostname BEFORE initializing (prevents default ESP32_XXXXXX name)
+    WiFi.setHostname(WIFI_PORTAL_AP_NAME);
+    Console::printR(F("WiFi hostname set to: "));
+    Console::printlnR(WIFI_PORTAL_AP_NAME);
     
     // Initialize WiFi in AP+STA mode for always-on portal
     WiFi.mode(WIFI_AP_STA);
@@ -82,6 +88,14 @@ bool WiFiController::begin() {
 void WiFiController::setModuleManager(ModuleManager* moduleManager) {
     modules = moduleManager;
     Console::printlnR(F("WiFiController: ModuleManager reference configured"));
+}
+
+/**
+ * Set reference to RGB LED for status indication
+ */
+void WiFiController::setRGBLed(RGBLed* led) {
+    rgbLed = led;
+    Console::printlnR(F("WiFiController: RGB LED reference configured"));
 }
 
 /**
@@ -301,6 +315,11 @@ void WiFiController::scanNetworks() {
 bool WiFiController::connectToNetwork(const String& ssid, const String& password, bool saveCredentials) {
     Console::printR(F("Connecting to WiFi: "));
     Console::printlnR(ssid);
+    
+    // 🚨 CRITICAL: Set LED to BLUE STATIC immediately when starting connection attempt
+    if (rgbLed) {
+        rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
+    }
     
     if (isConnected && currentSSID == ssid) {
         Console::printlnR(F("Already connected to this network"));
@@ -665,7 +684,9 @@ void WiFiController::processConnectionState() {
             if (millis() - connectionStateTime >= CONNECTION_CHECK_INTERVAL) {
                 connectionAttempts++;
                 
-                if (WiFi.status() == WL_CONNECTED) {
+                wl_status_t status = WiFi.status();
+                
+                if (status == WL_CONNECTED) {
                     // Connection successful
                     isConnected = true;
                     wasConnectedBefore = true;
@@ -679,14 +700,47 @@ void WiFiController::processConnectionState() {
                     printNetworkDetails();
                     configureDNSServers();
                     
+                    // 🚨 SUCCESS: Set LED to GREEN (ready state)
+                    if (rgbLed) {
+                        rgbLed->setDeviceStatus(RGBLed::STATUS_READY);
+                    }
+                    
                     connectionState = WIFI_CONNECTED;
-                } else if (connectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
-                    // Connection failed after max attempts
+                }
+                // 🚨 CRITICAL: Detect authentication failure IMMEDIATELY
+                else if (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL || 
+                         status == WL_CONNECTION_LOST || connectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
+                    // Connection failed - show error immediately
                     isConnected = false;
                     currentSSID = "";
+                    
+                    Console::printlnR(F(""));
                     Console::printlnR(F("✗ Failed to connect to WiFi"));
-                    Console::printR(F("Status: "));
-                    Console::printlnR(String(WiFi.status()));
+                    Console::printR(F("Reason: "));
+                    
+                    // Detailed error message
+                    switch(status) {
+                        case WL_CONNECT_FAILED:
+                            Console::printlnR(F("Authentication failure (wrong password)"));
+                            break;
+                        case WL_NO_SSID_AVAIL:
+                            Console::printlnR(F("Network not found (SSID not available)"));
+                            break;
+                        case WL_CONNECTION_LOST:
+                            Console::printlnR(F("Connection lost"));
+                            break;
+                        default:
+                            Console::printlnR(F("Connection timeout"));
+                            break;
+                    }
+                    
+                    Console::printR(F("Status code: "));
+                    Console::printlnR(String(status));
+                    
+                    // 🚨 ERROR: Set LED to RED BLINKING IMMEDIATELY
+                    if (rgbLed) {
+                        rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+                    }
                     
                     connectionState = WIFI_FAILED;
                 } else {
@@ -733,12 +787,28 @@ void WiFiController::startPortalOnDisconnect() {
 bool WiFiController::tryAutoConnect() {
     Console::printlnR(F("Attempting auto-connection..."));
     
+    // 🚨 CRITICAL: Set LED to BLUE STATIC immediately when starting auto-connect
+    if (rgbLed) {
+        rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
+    }
+    
     // First, try WiFiManager's autoConnect (uses saved credentials from portal)
     Console::printlnR(F("Trying WiFiManager saved credentials..."));
     wifiManager.setConfigPortalTimeout(10); // Short timeout for auto-connect
     
+    // CRITICAL: Use explicit AP name for consistency
+    const char* apName = WIFI_PORTAL_AP_NAME;
+    const char* apPassword = strlen(WIFI_PORTAL_AP_PASSWORD) > 0 ? WIFI_PORTAL_AP_PASSWORD : nullptr;
+    
     // Try to connect without starting portal
-    if (wifiManager.autoConnect()) {
+    bool connected = false;
+    if (apPassword) {
+        connected = wifiManager.autoConnect(apName, apPassword);
+    } else {
+        connected = wifiManager.autoConnect(apName);
+    }
+    
+    if (connected) {
         isConnected = true;
         wasConnectedBefore = true;
         currentSSID = WiFi.SSID();
@@ -747,6 +817,11 @@ bool WiFiController::tryAutoConnect() {
         Console::printR(F("Connected to: "));
         Console::printlnR(currentSSID);
         printNetworkDetails();
+        
+        // 🚨 SUCCESS: Set LED to GREEN only if truly connected
+        if (rgbLed && WiFi.status() == WL_CONNECTED) {
+            rgbLed->setDeviceStatus(RGBLed::STATUS_READY);
+        }
         
         // Restore original timeout
         wifiManager.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT / 1000);
@@ -763,6 +838,10 @@ bool WiFiController::tryAutoConnect() {
     
     if (count == 0) {
         Console::printlnR(F("No custom saved networks found"));
+        // 🚨 ERROR: Set LED to RED BLINKING (no networks configured)
+        if (rgbLed) {
+            rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+        }
         return false;
     }
     
@@ -805,6 +884,12 @@ bool WiFiController::tryAutoConnect() {
                 Console::printR(F("Connected to: "));
                 Console::printlnR(savedSSID);
                 printNetworkDetails();
+                
+                // 🚨 SUCCESS: Set LED to GREEN only if truly connected
+                if (rgbLed && WiFi.status() == WL_CONNECTED) {
+                    rgbLed->setDeviceStatus(RGBLed::STATUS_READY);
+                }
+                
                 return true;
             } else {
                 Console::printR(F("✗ Failed to connect to "));
@@ -814,6 +899,10 @@ bool WiFiController::tryAutoConnect() {
     }
     
     Console::printlnR(F("Could not connect to any saved network"));
+    // 🚨 ERROR: Set LED to RED BLINKING (connection failed)
+    if (rgbLed) {
+        rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+    }
     return false;
 }
 
@@ -1079,8 +1168,8 @@ void WiFiController::startAlwaysOnPortal() {
     const char* customMenuHTML = "<form action='/custom' method='get'><button>Configure Fish Feeder</button></form><br/>\n";
     wifiManager.setCustomMenuHTML(customMenuHTML);
     
-    // Set AP credentials
-    String apName = WIFI_PORTAL_AP_NAME;
+    // Set AP credentials - CRITICAL: Use exact name from config
+    const char* apName = WIFI_PORTAL_AP_NAME;
     const char* apPassword = strlen(WIFI_PORTAL_AP_PASSWORD) > 0 ? WIFI_PORTAL_AP_PASSWORD : nullptr;
     
     Console::printR(F("Portal AP Name: "));
@@ -1096,14 +1185,22 @@ void WiFiController::startAlwaysOnPortal() {
     // Use direct AP setup + manual web server approach for guaranteed always-on
     configPortalActive = true;
     
-    // Setup Access Point manually first
+    // Setup Access Point manually first with EXPLICIT name
     WiFi.mode(WIFI_AP_STA);
-    bool apStarted;
     
+    // CRITICAL: Configure AP with explicit name BEFORE starting
+    // This prevents ESP32 from using default MAC-based name
+    bool apStarted;
     if (apPassword) {
-        apStarted = WiFi.softAP(apName.c_str(), apPassword);
+        Console::printR(F("Starting AP with name '"));
+        Console::printR(apName);
+        Console::printlnR(F("' and password"));
+        apStarted = WiFi.softAP(apName, apPassword);
     } else {
-        apStarted = WiFi.softAP(apName.c_str());
+        Console::printR(F("Starting AP with name '"));
+        Console::printR(apName);
+        Console::printlnR(F("' without password"));
+        apStarted = WiFi.softAP(apName);
     }
     
     if (apStarted) {
@@ -1248,6 +1345,9 @@ void WiFiController::testDNSServers() {
  * Call this regularly from main loop or task
  */
 void WiFiController::processConfigPortal() {
+    // 🚨 CRITICAL: Process connection state machine to detect errors immediately
+    processConnectionState();
+    
     // Check if AP shutdown was requested via web portal
     if (shutdownRequested) {
         Console::printlnR(F("Shutting down Access Point as requested via web portal..."));

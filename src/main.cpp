@@ -312,27 +312,38 @@ void scheduleMonitorTask() {
  * Runs every 10 seconds to check connection and handle auto-reconnection
  */
 void wifiMonitorTask() {
-    // 🚨 STATUS: Track WiFi state for LED indication
+    // 🚨 CRITICAL: Continuously verify LED status matches actual WiFi state
+    // This ensures LED always reflects the true connection state
+    
     static bool wasConnected = false;
-    static bool wasConnecting = false;
     bool isConnected = wifiController.isWiFiConnected();
     
     // Detect connection state changes
     if (!isConnected && wasConnected) {
-        // Just lost connection - show connecting status
-        if (rgbLed.getDeviceStatus() == RGBLed::STATUS_READY) {
-            rgbLed.setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
-            wasConnecting = true;
-        }
+        // Just lost connection
+        Console::printlnR(F("WiFi connection lost!"));
     } else if (isConnected && !wasConnected) {
         // Just got connected
         Console::printlnR(F("WiFi connection established - notifying NTP module"));
         ntpSync.onWiFiConnected();
-        
-        // Return to ready if we were connecting
-        if (wasConnecting) {
-            rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
-            wasConnecting = false;
+    }
+    
+    // 🚨 CRITICAL: Ensure LED status is always correct
+    // Check every cycle to prevent LED showing wrong state
+    if (isConnected) {
+        // Connected: LED should be GREEN (unless feeding is in progress)
+        if (rgbLed.getDeviceStatus() == RGBLed::STATUS_WIFI_CONNECTING || 
+            rgbLed.getDeviceStatus() == RGBLed::STATUS_WIFI_ERROR) {
+            // Was showing WiFi status, now we're connected
+            if (!moduleManager.getFeedingInProgress()) {
+                rgbLed.setDeviceStatus(RGBLed::STATUS_READY);
+            }
+        }
+    } else {
+        // Not connected: LED should show trying or error
+        if (rgbLed.getDeviceStatus() == RGBLed::STATUS_READY) {
+            // Was ready, but connection lost - show error
+            rgbLed.setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
         }
     }
     
@@ -657,6 +668,10 @@ void setup() {
     Console::printlnR(F("WARNING: Failed to initialize WiFi Controller"));
     Console::printlnR(F("WiFi functions will be limited"));
   }
+  
+  // Configure WiFi Controller with RGB LED reference for status indication
+  wifiController.setRGBLed(&rgbLed);
+  Console::printlnR(F("WiFi Controller: RGB LED integration configured"));
   
   // Keep LED blinking during WiFi connection (longer period)
   Console::printlnR(F("Waiting for WiFi connection..."));

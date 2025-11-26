@@ -235,8 +235,16 @@ void RGBLed::setDeviceStatus(DeviceStatus status) {
             break;
             
         case STATUS_WIFI_CONNECTING:
-            // Blue 50% blinking 500ms
+            // Blue 100% STATIC (not blinking - indicates actively trying to connect)
+            stopBlink();  // Stop any blinking
             setColor(BLUE);
+            setBrightness(100);  // Full brightness for clear indication
+            turnOn();  // Static, not blinking
+            break;
+            
+        case STATUS_WIFI_ERROR:
+            // Red 50% blinking 500ms (connection failed/error)
+            setColor(RED);
             setBrightness(50);
             blink(500, 0);  // Infinite blink
             break;

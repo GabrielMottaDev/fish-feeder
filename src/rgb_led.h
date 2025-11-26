@@ -38,12 +38,13 @@ public:
      * Controls automatic LED behavior based on device state
      */
     enum DeviceStatus {
-        STATUS_BOOTING,        // Red 50% blinking 500ms
-        STATUS_WIFI_CONNECTING, // Blue 50% blinking 500ms
-        STATUS_TIME_SYNCING,   // Yellow 50% blinking 500ms
-        STATUS_READY,          // Green 60% static
-        STATUS_FEEDING,        // Green 60% blinking 250ms
-        STATUS_MANUAL          // Manual control (no automatic status)
+        STATUS_BOOTING,            // Red 50% blinking 500ms
+        STATUS_WIFI_CONNECTING,    // Blue 100% STATIC (trying to connect)
+        STATUS_WIFI_ERROR,         // Red 50% blinking 500ms (connection failed)
+        STATUS_TIME_SYNCING,       // Yellow 50% blinking 500ms
+        STATUS_READY,              // Green 60% static
+        STATUS_FEEDING,            // Green 60% blinking 250ms
+        STATUS_MANUAL              // Manual control (no automatic status)
     };
 
     /**
