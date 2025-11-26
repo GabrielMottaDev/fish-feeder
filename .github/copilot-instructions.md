@@ -711,6 +711,50 @@ while (client.available() == 0) { yield(); }
 
 Following official ESP32 WiFi documentation, implemented intelligent reconnection strategy with exponential backoff:
 
+#### **⚠️ CRITICAL FIX (November 2025): AP Portal Must Remain Active During Reconnection**
+
+**❌ PREVIOUS WRONG APPROACH:**
+```cpp
+// This DISABLED the AP portal during reconnection:
+WiFi.mode(WIFI_OFF);        // Turns OFF everything (AP + Station)
+delay(2000);
+WiFi.mode(WIFI_AP_STA);     // Restart dual mode
+```
+**PROBLEM**: User cannot access configuration portal at 192.168.4.1 during reconnection attempts. System becomes completely inaccessible during WiFi errors.
+
+**✅ CORRECT APPROACH:**
+```cpp
+// This MAINTAINS the AP portal during reconnection:
+WiFi.disconnect(false);          // Disconnect station ONLY (keep AP)
+if (WiFi.getMode() != WIFI_AP_STA) {
+    WiFi.mode(WIFI_AP_STA);      // Ensure dual mode
+}
+WiFi.softAP(apName, pass);       // Ensure AP is broadcasting
+```
+**SOLUTION**: Portal remains accessible at 192.168.4.1 throughout ALL reconnection attempts. Users can manually configure WiFi even while automatic reconnection is running.
+
+#### **⚠️ CRITICAL FIX #2 (November 2025): Error State Not Marked on Boot Failure**
+
+**❌ PROBLEM DISCOVERED:**
+When `tryAutoConnect()` fails during boot, the system was NOT marking error state, so automatic reconnection never started.
+
+**✅ SOLUTION IMPLEMENTED:**
+```cpp
+// After tryAutoConnect() fails in boot sequence
+if (!inErrorState) {
+    inErrorState = true;
+    errorStateStartTime = millis();
+    reconnectionAttempts = 0;
+    Console::printlnR(F("⚠ Error state activated - automatic reconnection will start"));
+    Console::printlnR(F("Reconnection schedule: 0s, 0s, 5s, 10s, 30s, 60s..."));
+    
+    if (rgbLed) {
+        rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+    }
+}
+```
+**RESULT**: System now properly enters error state and begins exponential backoff reconnection attempts automatically.
+
 #### **Exponential Backoff Pattern:**
 ```cpp
 // Reconnection intervals (professional IoT pattern):
@@ -768,27 +812,35 @@ void handleErrorStateReconnection() {
 #### **WiFi Hardware Reset Pattern (Espressif Standard):**
 ```cpp
 void resetWiFiHardware() {
-    WiFi.disconnect(true);      // Disconnect + erase credentials
+    // CRITICAL: AP portal MUST remain active for manual configuration
+    
+    WiFi.disconnect(false);         // Disconnect station only (keep AP)
     delay(500);
     
-    WiFi.mode(WIFI_OFF);        // Turn OFF radio
-    delay(2000);                // 2 seconds OFF (hardware reset)
+    // Verify AP+STA mode is active
+    if (WiFi.getMode() != WIFI_AP_STA) {
+        WiFi.mode(WIFI_AP_STA);     // Restore dual mode
+        delay(300);
+    }
     
-    WiFi.mode(WIFI_AP_STA);     // Restart in dual mode
-    delay(500);
+    // Ensure AP is broadcasting
+    if (WiFi.softAPgetStationNum() == 0) {
+        WiFi.softAPdisconnect(false);  // Reset AP without turning off
+        delay(200);
+    }
+    WiFi.softAP(apName, pass);      // Re-establish AP
     
-    WiFi.softAP(apName, pass);  // Re-establish portal
-    configureDNSServers();      // Reconfigure DNS
+    configureDNSServers();          // Reconfigure DNS
 }
 ```
 
-#### **Why Complete WiFi Reset?**
-According to Espressif documentation:
-- **Clears internal WiFi driver state**
-- **Resets radio hardware**
-- **Frees memory resources**
-- **Forces stack re-initialization**
-- **Resolves stuck authentication states**
+#### **Why Keep AP Active During Reset?**
+Critical design decision:
+- **User accessibility**: Portal at 192.168.4.1 always available
+- **Manual configuration**: User can change WiFi network during reconnection attempts
+- **No lockout**: System never becomes completely inaccessible
+- **Professional behavior**: Enterprise IoT devices maintain management interface
+- **Graceful degradation**: Even with WiFi errors, device remains configurable
 
 #### **Why Exponential Backoff?**
 Industry-standard pattern used by Google, AWS, Azure IoT:
@@ -800,16 +852,17 @@ Industry-standard pattern used by Google, AWS, Azure IoT:
 
 #### **Reconnection Timeline Example:**
 ```
-Error detected → LED red blinking
-0s:  Attempt #1 (immediate)
-0s:  Attempt #2 (immediate) 
-5s:  Attempt #3 (waited 5s)
-15s: Attempt #4 (waited 10s)
-45s: Attempt #5 (waited 30s)
-105s: Attempt #6 (waited 60s)
-165s: Attempt #7 (waited 60s)
+Error detected → LED behavior:
+0s:  Attempt #1 (immediate) → 🔵 LED Blue (active reconnection)
+0s:  Attempt #2 (immediate) → 🔵 LED Blue (active reconnection)
+5s:  Attempt #3 (waited 5s) → 🔵 LED Blue (active reconnection)
+15s: Attempt #4 (waited 10s) → 🔴 LED Red blinking (background reconnection)
+45s: Attempt #5 (waited 30s) → 🔴 LED Red blinking (background reconnection)
+105s: Attempt #6 (waited 60s) → 🔴 LED Red blinking (background reconnection)
+165s: Attempt #7 (waited 60s) → 🔴 LED Red blinking (background reconnection)
 ...
 After 10 attempts → System stays offline, portal at 192.168.4.1
+On success → 🟢 LED Green (connected)
 ```
 
 #### **Error State Management:**
@@ -831,17 +884,21 @@ if (isConnected) {
 #### **Integration Points:**
 - **`checkConnectionStatus()`**: Calls `handleErrorStateReconnection()` every cycle
 - **`processConnectionState()`**: Marks error state when connection fails
-- **`tryAutoConnect()`**: Clears error state on successful reconnection
+- **`tryAutoConnect()`**: Clears error state on successful reconnection, marks error state on boot failure
 - **`getReconnectionInterval()`**: Calculates backoff time based on attempt number
-- **LED Status**: Blue (connecting) → Green (connected) → Red blinking (error)
+- **LED Status**: 
+  - 🔵 Blue (attempts 1-3, active reconnection)
+  - 🔴 Red blinking (attempts 4+, background reconnection)
+  - 🟢 Green (connected successfully)
 
 #### **Key Design Decisions:**
-1. **Immediate first attempts**: Catches transient network issues quickly
+1. **Immediate first attempts**: Catches transient network issues quickly (blue LED)
 2. **Progressive backoff**: 5s → 10s → 30s → 60s pattern
-3. **60s cap for attempts 6+**: Prevents excessive waiting
-4. **10 attempt limit**: Prevents infinite reconnection loops
-5. **2-second WiFi OFF**: Ensures complete hardware reset
-6. **Portal remains active**: User can always manually configure via web interface
+3. **Visual feedback transition**: Blue (attempts 1-3) → Red blinking (attempts 4+)
+4. **60s cap for attempts 6+**: Prevents excessive waiting
+5. **10 attempt limit**: Prevents infinite reconnection loops
+6. **AP portal remains active**: User can always manually configure via web interface
+7. **Non-intrusive background reconnection**: After 3 attempts, system shows error but continues trying
 
 #### **Blocking Code Detection Automation:**
 ```cpp
@@ -1126,6 +1183,9 @@ This comprehensive development session successfully resolved:
 - ✅ **Date Formatting**: Implemented professional DD/MM/YYYY format
 - ✅ **UX Issues**: Removed annoying confirmations for streamlined workflow
 - ✅ **WiFi Reconnection**: Implemented exponential backoff strategy (0s, 0s, 5s, 10s, 30s, 60s)
+- ✅ **AP Portal Availability**: Fixed portal disappearing during reconnection attempts
+- ✅ **Boot Error State**: Fixed error state not being marked when boot connection fails
+- ✅ **LED Behavior**: Optimized visual feedback (blue for first 3 attempts, red blinking after)
 - ✅ **System Integration**: Achieved complete end-to-end functionality
 
-**RESULT**: Fully functional ESP32 Fish Feeder with professional web interface and intelligent WiFi recovery! 🎉
+**RESULT**: Fully functional ESP32 Fish Feeder with professional web interface, intelligent WiFi recovery, and optimized user feedback! 🎉

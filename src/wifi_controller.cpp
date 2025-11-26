@@ -79,6 +79,20 @@ bool WiFiController::begin() {
         configureDNSServers();
     } else {
         Console::printlnR(F("No saved networks available - portal remains active for configuration"));
+        
+        // 🚨 CRITICAL: Mark error state to enable automatic reconnection attempts
+        if (!inErrorState) {
+            inErrorState = true;
+            errorStateStartTime = millis();
+            reconnectionAttempts = 0;
+            Console::printlnR(F("⚠ Error state activated - automatic reconnection will start"));
+            Console::printlnR(F("Reconnection schedule: 0s, 0s, 5s, 10s, 30s, 60s..."));
+            
+            // Set LED to red blinking (error state)
+            if (rgbLed) {
+                rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+            }
+        }
     }
 
     Console::printlnR(F("===================================="));
@@ -826,13 +840,15 @@ void WiFiController::startPortalOnDisconnect() {
 bool WiFiController::tryAutoConnect() {
     Console::printlnR(F("Attempting auto-connection..."));
     
-    // 🚨 CRITICAL: Set LED to BLUE STATIC immediately when starting auto-connect
-    if (rgbLed) {
-        rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
-    }
+    // DON'T set LED here - it's managed by handleErrorStateReconnection()
+    // to maintain correct blue/red behavior across attempts
     
     // First, try WiFiManager's autoConnect (uses saved credentials from portal)
     Console::printlnR(F("Trying WiFiManager saved credentials..."));
+    
+    // CRITICAL: Reduce WiFiManager internal retries to 1
+    // Our exponential backoff handles the retry logic
+    wifiManager.setConnectRetries(1); // Only 1 attempt per call
     wifiManager.setConfigPortalTimeout(10); // Short timeout for auto-connect
     
     // CRITICAL: Use explicit AP name for consistency
@@ -2470,43 +2486,53 @@ void WiFiController::setupScheduleAPIEndpoints() {
 }
 
 /**
- * Reset WiFi hardware completely
+ * Reset WiFi hardware completely while maintaining AP portal
  * Following ESP32 IoT best practices for WiFi recovery
- * This method performs a complete WiFi reset as recommended by Espressif documentation
+ * CRITICAL: AP portal remains active during entire process for manual configuration
  */
 void WiFiController::resetWiFiHardware() {
     Console::printlnR(F(""));
     Console::printlnR(F("=== PERFORMING WIFI HARDWARE RESET ==="));
     Console::printlnR(F("Following Espressif IoT reconnection pattern..."));
+    Console::printlnR(F("Portal will remain active during reset"));
     
-    // Step 1: Disconnect from current network
-    Console::printlnR(F("1. Disconnecting from current network..."));
-    WiFi.disconnect(true);  // true = erase saved credentials in WiFi driver
+    // Step 1: Disconnect from current station network only
+    Console::printlnR(F("1. Disconnecting from current network (keeping AP active)..."));
+    WiFi.disconnect(false);  // false = don't erase credentials, just disconnect station
     delay(500);
     
-    // Step 2: Turn OFF WiFi completely to reset hardware state
-    Console::printlnR(F("2. Turning OFF WiFi radio..."));
-    WiFi.mode(WIFI_OFF);
-    delay(2000);  // 2 seconds OFF - allows hardware reset
+    // Step 2: Verify AP is still active, restart if needed
+    Console::printlnR(F("2. Verifying AP portal status..."));
+    if (WiFi.getMode() != WIFI_AP_STA) {
+        Console::printlnR(F("   Restoring AP+STA mode..."));
+        WiFi.mode(WIFI_AP_STA);
+        delay(300);
+    }
     
-    // Step 3: Restart WiFi in AP+STA mode
-    Console::printlnR(F("3. Restarting WiFi in AP+STA mode..."));
-    WiFi.mode(WIFI_AP_STA);
-    delay(500);
-    
-    // Step 4: Re-establish always-on portal
-    Console::printlnR(F("4. Re-establishing WiFi portal..."));
+    // Step 3: Ensure AP is broadcasting with correct SSID
+    Console::printlnR(F("3. Ensuring AP is broadcasting..."));
+    if (WiFi.softAPgetStationNum() == 0) {  // No stations connected, safe to restart AP
+        WiFi.softAPdisconnect(false);  // Don't turn off, just reset
+        delay(200);
+    }
     WiFi.softAP(WIFI_PORTAL_AP_NAME, WIFI_PORTAL_AP_PASSWORD);
+    delay(300);
     
-    // Step 5: Reconfigure DNS servers
+    // Step 4: Verify AP is accessible
+    Console::printR(F("4. AP Status: "));
+    Console::printR(WIFI_PORTAL_AP_NAME);
+    Console::printR(F(" @ "));
+    Console::printlnR(WiFi.softAPIP().toString());
+    
+    // Step 5: Reconfigure DNS servers for station mode
     Console::printlnR(F("5. Reconfiguring DNS servers..."));
     configureDNSServers();
     
-    // Reset error state tracking
-    inErrorState = false;
-    errorStateStartTime = 0;
+    // DON'T reset error state here - it's managed by handleErrorStateReconnection()
+    // Only the successful reconnection should clear error state
     
     Console::printlnR(F("✓ WiFi hardware reset complete"));
+    Console::printlnR(F("✓ AP portal remains active for manual configuration"));
     Console::printlnR(F("==================================="));
     Console::printlnR(F(""));
 }
@@ -2577,12 +2603,23 @@ void WiFiController::handleErrorStateReconnection() {
         // Try to reconnect to saved networks
         Console::printlnR(F("Attempting reconnection to saved networks..."));
         
-        // Set LED to blue (connecting)
+        // LED behavior: Blue ONLY for first 3 attempts, then red SOLID during connection
         if (rgbLed) {
-            rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
+            if (reconnectionAttempts <= 3) {
+                // First 3 attempts: BLUE (connecting actively)
+                rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_CONNECTING);
+                Console::printlnR(F("LED: Blue (active reconnection attempt)"));
+            } else {
+                // After 3 attempts: RED SOLID during connection attempt
+                // CRITICAL: Stop blinking and force RED ON (prevents LED being OFF during blocking)
+                rgbLed->stopBlink();
+                rgbLed->setColor(255, 0, 0); // Force RED ON
+                rgbLed->turnOn();
+                Console::printlnR(F("LED: Red solid (during connection attempt)"));
+            }
         }
         
-        // Try auto-connect
+        // Try auto-connect (BLOCKING operation)
         if (tryAutoConnect()) {
             Console::printlnR(F("✓ Reconnection successful!"));
             
@@ -2610,8 +2647,9 @@ void WiFiController::handleErrorStateReconnection() {
             }
             
             // Keep LED red blinking and reset timer
+            // After blocking operation completes, restore blinking state
             if (rgbLed) {
-                rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR);
+                rgbLed->setDeviceStatus(RGBLed::STATUS_WIFI_ERROR); // Resume blinking
             }
             errorStateStartTime = millis(); // Reset timer for next attempt
         }
